@@ -41,6 +41,8 @@ class CouponModel:
             "applicable_product_ids": [str(item) for item in (data.get("applicable_product_ids") or [])],
             "duration": duration,
             "is_active": bool(data.get("is_active", True)),
+            "affiliate_id": str(data["affiliate_id"]) if data.get("affiliate_id") else None,
+            "affiliate_product_id": str(data["affiliate_product_id"]) if data.get("affiliate_product_id") else None,
             "created_at": now,
             "updated_at": now,
         }
@@ -81,6 +83,12 @@ class CouponModel:
             updates["applicable_product_ids"] = [str(item) for item in data["applicable_product_ids"]]
         if "is_active" in data:
             updates["is_active"] = bool(data["is_active"])
+        if "affiliate_id" in data:
+            updates["affiliate_id"] = str(data["affiliate_id"]) if data.get("affiliate_id") else None
+        if "affiliate_product_id" in data:
+            updates["affiliate_product_id"] = (
+                str(data["affiliate_product_id"]) if data.get("affiliate_product_id") else None
+            )
         mongo.db.coupons.update_one({"_id": to_object_id(coupon_id)}, {"$set": updates})
         return CouponModel.get_by_id(coupon_id)
 
@@ -124,3 +132,12 @@ class CouponModel:
         if coupon_id:
             query["coupon_id"] = str(coupon_id)
         return [serialize_doc(doc) for doc in mongo.db.coupon_redemptions.find(query).sort("redeemed_at", -1)]
+
+    @staticmethod
+    def find_by_affiliate(affiliate_id, product_id=None):
+        if not affiliate_id:
+            return None
+        query = {"affiliate_id": str(affiliate_id), "is_active": True}
+        if product_id:
+            query["affiliate_product_id"] = str(product_id)
+        return serialize_doc(mongo.db.coupons.find_one(query, sort=[("created_at", -1)]))

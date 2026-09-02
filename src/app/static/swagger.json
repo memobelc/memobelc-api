@@ -870,6 +870,44 @@
         "responses": { "200": { "description": "Token registrado" }, "400": { "description": "push_token obrigatório" } }
       }
     },
+    "/notifications/settings": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Obter preferências de notificação do usuário",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Preferências por serviço (app e e-mail)" } }
+      },
+      "patch": {
+        "tags": ["Notifications"],
+        "summary": "Atualizar preferências de notificação do usuário",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "services": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": { "type": "boolean" },
+                      "email": { "type": "boolean" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Preferências atualizadas" },
+          "400": { "description": "Serviço inválido" }
+        }
+      }
+    },
     "/notifications/send_daily": {
       "post": {
         "tags": ["Notifications"],

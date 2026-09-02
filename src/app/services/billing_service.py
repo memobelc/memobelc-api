@@ -22,6 +22,7 @@ from src.app.provider.asaas import Asaas, AsaasError
 from src.app.provider.google_play import GooglePlay, GooglePlayError
 from src.app.services.coupon_service import CouponService
 from src.app.services.entitlement_service import EntitlementService
+from src.app.services.affiliate_service import AffiliateService
 from src.app.utils.billing_utils import (
     ACCESS_STATUSES,
     ASAAS_PAID_STATUSES,
@@ -317,6 +318,10 @@ class BillingService:
             UserModel.set_cpf_cnpj(user._id, incoming_cpf)
             user.cpf_cnpj = incoming_cpf
 
+        affiliate_meta = AffiliateService.attribution_metadata(
+            data, coupon, product_type, product_id
+        )
+
         if product_type == "plan":
             blocking = BillingService._blocking_subscription(user._id)
             if blocking and blocking.get("status") in ACCESS_STATUSES:
@@ -379,6 +384,7 @@ class BillingService:
                     "grace_until": compute_grace_until(next_due),
                     "current_period_start": utcnow(),
                     "current_period_end": utcnow() + cycle_timedelta(product.get("cycle")),
+                    "metadata": dict(affiliate_meta),
                 })
                 if coupon:
                     CouponModel.record_redemption(coupon["_id"], user._id, {"subscription_id": subscription["_id"]})
@@ -398,11 +404,14 @@ class BillingService:
                         "invoice_url": invoice_url,
                         "payment_method": billing_type,
                         "paid_at": utcnow() if paid else None,
+                        "metadata": dict(affiliate_meta),
                     })
                 granted = False
                 if status in ACCESS_STATUSES:
                     EntitlementService.grant_subscription_entitlements(user._id, product, subscription["_id"])
                     granted = True
+                    if payment and payment.get("status") == "confirmed":
+                        AffiliateService.accrue_from_payment(payment, subscription)
                 pix = BillingService._pix_for_payment((first_pay or {}).get("id")) if billing_type == "PIX" else None
                 return BillingService._native_checkout_result(
                     billing_type,
@@ -445,6 +454,7 @@ class BillingService:
                     "product": snapshot,
                     "user_created": bool(data.get("_user_created")),
                     "must_change_password": bool(data.get("_must_change_password")),
+                    **affiliate_meta,
                 },
             })
             if coupon:
@@ -529,6 +539,7 @@ class BillingService:
                     "invoice_url": payment_payload.get("invoiceUrl"),
                     "payment_method": payment_payload.get("billingType"),
                     "paid_at": utcnow() if status == "confirmed" else None,
+                    "metadata": dict((subscription or {}).get("metadata") or {}),
                 })
         elif payment:
             updates = {
@@ -543,14 +554,14 @@ class BillingService:
             payment = PaymentModel.update(payment["_id"], updates)
 
         if subscription:
-            BillingService._apply_subscription_payment(subscription, status, payment_payload)
+            BillingService._apply_subscription_payment(subscription, status, payment_payload, payment)
         elif payment and status == "confirmed":
             BillingService._fulfill_one_time(payment)
         elif payment and status == "refunded":
             BillingService._revoke_one_time(payment)
 
     @staticmethod
-    def _apply_subscription_payment(subscription, status, payment_payload):
+    def _apply_subscription_payment(subscription, status, payment_payload, payment=None):
         user_id = subscription["user_id"]
         plan = PlanModel.get_by_id(subscription["plan_id"])
         next_due = payment_payload.get("dueDate") or subscription.get("next_due_date")
@@ -566,6 +577,8 @@ class BillingService:
             if plan:
                 updates["current_period_end"] = utcnow() + cycle_timedelta(plan.get("cycle"))
             EntitlementService.grant_subscription_entitlements(user_id, plan, subscription["_id"])
+            if payment:
+                AffiliateService.accrue_from_payment(payment, subscription)
         elif status == "overdue":
             updates["status"] = "overdue"
         elif status == "refused":
@@ -574,6 +587,8 @@ class BillingService:
             updates["status"] = "canceled"
             updates["canceled_at"] = utcnow()
             EntitlementService.revoke_subscription_entitlements(user_id, subscription["_id"])
+            if payment:
+                AffiliateService.cancel_from_payment(payment)
         SubscriptionModel.update(subscription["_id"], updates)
 
     @staticmethod
@@ -627,6 +642,7 @@ class BillingService:
             BillingService._enroll_classroom_buyer(user_id, product_id)
             BillingService._confirm_buyer_email(user_id)
             BillingService._send_purchase_receipt(payment)
+        AffiliateService.accrue_from_payment(payment)
 
     @staticmethod
     def _enroll_course_buyer(user_id, course_id):
@@ -886,6 +902,7 @@ Equipe Memobelc
         if not user_id:
             return
         EntitlementModel.revoke_by_source(user_id, "purchase", payment["_id"])
+        AffiliateService.cancel_from_payment(payment)
 
     @staticmethod
     def my_subscription(user):

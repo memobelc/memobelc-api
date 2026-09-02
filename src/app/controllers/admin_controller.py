@@ -72,6 +72,12 @@ class AdminController:
         if not updated:
             return jsonify({"error": "User not found"}), 404
 
+        try:
+            from src.app.services.affiliate_service import AffiliateService
+            AffiliateService.sync_role(user_id, updated.get_roles(), admin_id=current_user._id)
+        except Exception:
+            pass
+
         return jsonify({
             "_id": updated._id,
             "name": updated.name,

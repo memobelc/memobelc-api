@@ -114,6 +114,26 @@ class SupportTicketModel:
         return SupportTicketModel.find_by_id(ticket_id)
 
     @staticmethod
+    def apply_system_message(ticket_id, preview):
+        now = utcnow()
+        mongo.db.support_tickets.update_one(
+            {"_id": ObjectId(ticket_id)},
+            {
+                "$set": {
+                    "status": "open",
+                    "last_message_at": now,
+                    "last_message_preview": preview,
+                    "last_author_role": "system",
+                    "closed_by": None,
+                    "closed_at": None,
+                    "updated_at": now,
+                },
+                "$inc": {"unread_for_admin": 1},
+            },
+        )
+        return SupportTicketModel.find_by_id(ticket_id)
+
+    @staticmethod
     def apply_admin_message(ticket_id, preview):
         now = utcnow()
         ticket = SupportTicketModel.find_by_id(ticket_id)

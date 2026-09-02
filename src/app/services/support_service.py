@@ -200,3 +200,17 @@ class SupportService:
         if ticket.get("status") != "closed":
             return _enrich_ticket(ticket)
         return _enrich_ticket(SupportTicketModel.reopen(ticket_id))
+
+    @staticmethod
+    def post_system_message(user_id, body):
+        text = _clean_body(body)
+        ticket = SupportTicketModel.get_or_create_for_user(user_id)
+        message = SupportMessageModel.create(
+            ticket_id=ticket["_id"],
+            author_id="system",
+            author_role="system",
+            body=text,
+        )
+        preview = SupportTicketModel.preview_from_body(text)
+        ticket = SupportTicketModel.apply_system_message(ticket["_id"], preview)
+        return {"ticket": ticket, "message": message}

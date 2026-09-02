@@ -59,6 +59,22 @@ class NotificationController:
 
     @staticmethod
     @token_required
+    def get_settings(current_user, token):
+        settings = NotificationService.get_user_settings(str(current_user._id))
+        return jsonify(settings), 200
+
+    @staticmethod
+    @token_required
+    def update_settings(current_user, token):
+        data = request.get_json() or {}
+        try:
+            settings = NotificationService.update_user_settings(str(current_user._id), data)
+        except ValueError as exc:
+            raise BadRequest(description=str(exc))
+        return jsonify(settings), 200
+
+    @staticmethod
+    @token_required
     def send_daily(current_user, token):
         """Permite disparar manualmente as notificações diárias (restrito a admin)."""
         if not current_user.has_role("admin"):
@@ -120,6 +136,8 @@ notification_blueprint.route("/list", methods=["GET"])(NotificationController.li
 notification_blueprint.route("/unread_count", methods=["GET"])(NotificationController.unread_count)
 notification_blueprint.route("/mark_as_read", methods=["POST"])(NotificationController.mark_as_read)
 notification_blueprint.route("/register_token", methods=["POST"])(NotificationController.register_token)
+notification_blueprint.route("/settings", methods=["GET"])(NotificationController.get_settings)
+notification_blueprint.route("/settings", methods=["PATCH"])(NotificationController.update_settings)
 
 # Rotas de disparo (teacher/admin)
 notification_blueprint.route("/send_daily", methods=["POST"])(NotificationController.send_daily)

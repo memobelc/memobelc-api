@@ -6,7 +6,7 @@ from datetime import datetime
 
 from src.app.models.push_notification_model import PushNotificationModel
 
-ALLOWED_ROLES = ("user", "teacher", "admin")
+ALLOWED_ROLES = ("user", "teacher", "admin", "affiliate")
 ADDRESS_FIELDS = (
     "postal_code",
     "street",
@@ -390,18 +390,22 @@ class UserModel:
 
     @staticmethod
     def list_users(search=None):
-        """Lista usuários para gestão admin (id, nome, email, roles)."""
+        """Lista usuários para gestão admin (id, nome, email, cpf, roles)."""
         query = {}
         if search:
-            query = {
-                "$or": [
-                    {"name": {"$regex": search, "$options": "i"}},
-                    {"email": {"$regex": search, "$options": "i"}},
-                ]
-            }
+            term = str(search).strip()
+            digits = "".join(ch for ch in term if ch.isdigit())
+            clauses = [
+                {"name": {"$regex": term, "$options": "i"}},
+                {"email": {"$regex": term, "$options": "i"}},
+                {"cpf_cnpj": {"$regex": term, "$options": "i"}},
+            ]
+            if digits:
+                clauses.append({"cpf_cnpj": {"$regex": digits}})
+            query = {"$or": clauses}
         cursor = mongo.db.users.find(
             query,
-            {"name": 1, "email": 1, "role": 1, "roles": 1, "coins": 1, "image": 1},
+            {"name": 1, "email": 1, "role": 1, "roles": 1, "coins": 1, "image": 1, "cpf_cnpj": 1},
         )
         users = []
         for user_data in cursor:
@@ -413,6 +417,7 @@ class UserModel:
                 "_id": str(user_data["_id"]),
                 "name": user_data.get("name"),
                 "email": user_data.get("email"),
+                "cpf_cnpj": user_data.get("cpf_cnpj"),
                 "role": UserModel.primary_role(roles),
                 "roles": roles,
                 "coins": int(user_data.get("coins") or 0),

@@ -2,8 +2,13 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from datetime import datetime, timezone
 
-from src.app import mongo
+from flask import current_app
+from flask_mail import Message
+
+from src.app import mail, mongo
+from src.app.config import Config
 from src.app.models.notification.notification_model import NotificationModel
+from src.app.models.notification.user_notification_settings_model import UserSettingsModel
 from src.app.models.user_model import UserModel
 from src.app.models.user_progress_model import UserProgressModel
 from src.app.models.classroom_model import ClassroomModel
@@ -20,6 +25,56 @@ class NotificationService:
     TYPE_TEACHER_CUSTOM = "teacher_custom"
     TYPE_ADMIN_CUSTOM = "admin_custom"
     TYPE_SUPPORT = "support"
+    TYPE_AFFILIATE = "affiliate"
+
+    # ---------- Preferências ----------
+    @staticmethod
+    def get_user_settings(user_id: str) -> Dict[str, Any]:
+        return UserSettingsModel.get_settings(user_id)
+
+    @staticmethod
+    def update_user_settings(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return UserSettingsModel.update_settings(user_id, data)
+
+    @staticmethod
+    def _service_pref(user_id: str, notification_type: str) -> Dict[str, bool]:
+        settings = UserSettingsModel.get_settings(user_id)
+        pref = (settings.get("services") or {}).get(notification_type) or {"enabled": True, "email": False}
+        return {"enabled": bool(pref.get("enabled", True)), "email": bool(pref.get("email", False))}
+
+    @staticmethod
+    def _should_notify(user_id: str, notification_type: str) -> bool:
+        return NotificationService._service_pref(user_id, notification_type)["enabled"]
+
+    @staticmethod
+    def _should_email(user_id: str, notification_type: str) -> bool:
+        pref = NotificationService._service_pref(user_id, notification_type)
+        return pref["enabled"] and pref["email"]
+
+    @staticmethod
+    def _send_notification_email(user_id: str, title: str, body: str) -> None:
+        user = UserModel.find_by_id(user_id)
+        if not user or not getattr(user, "email", None):
+            return
+        msg = Message(
+            subject=f"Memobelc: {title}",
+            recipients=[user.email],
+            sender=Config.MAIL_DEFAULT_SENDER or Config.MAIL_USERNAME,
+        )
+        msg.body = f"""Olá {user.name or ''}!
+
+{title}
+
+{body}
+
+Você recebeu este e-mail porque ativou notificações por e-mail no Memobelc.
+
+Equipe Memobelc
+""".strip()
+        try:
+            mail.send(msg)
+        except Exception as exc:
+            current_app.logger.error(f"Failed to send notification email to {user.email}: {exc}")
 
     # ---------- Funções utilitárias ----------
     @staticmethod
@@ -30,15 +85,18 @@ class NotificationService:
         body: str,
         extra_data: Optional[Dict[str, Any]] = None,
     ):
+        if not NotificationService._should_notify(user_id, notification_type):
+            return
+
         data = {"title": title, "body": body}
         if extra_data:
             data.update(extra_data)
 
-        # Cria registro interno
         NotificationModel.create(user_id=user_id, notification_type=notification_type, data=data)
-
-        # Dispara push (se houver token cadastrado)
         PushNotificationService.send_to_user(user_id=user_id, title=title, body=body, data=extra_data or {})
+
+        if NotificationService._should_email(user_id, notification_type):
+            NotificationService._send_notification_email(user_id, title, body)
 
     # ---------- API para controllers ----------
     @staticmethod
@@ -243,5 +301,19 @@ class NotificationService:
             body=body,
             extra_data={"ticket_id": str(ticket_id)},
         )
+
+    @staticmethod
+    def notify_admins_affiliate(title: str, body: str, kind: str, extra_data: Optional[Dict[str, Any]] = None):
+        payload = {"kind": kind}
+        if extra_data:
+            payload.update(extra_data)
+        for admin_id in NotificationService._admin_user_ids(exclude_user_id=payload.get("user_id")):
+            NotificationService._create_and_push(
+                user_id=admin_id,
+                notification_type=NotificationService.TYPE_AFFILIATE,
+                title=title,
+                body=body,
+                extra_data=payload,
+            )
 
 
