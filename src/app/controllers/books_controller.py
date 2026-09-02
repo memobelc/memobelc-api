@@ -31,7 +31,10 @@ class BookController:
         if "nivel" not in data:
             return jsonify({"error": "Missing required field: nivel"}), 400
 
-        result = BookService.create_book(data, current_user._id)
+        try:
+            result = BookService.create_book(data, current_user._id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result), 201
 
     @staticmethod
@@ -42,7 +45,10 @@ class BookController:
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
-        updated = BookService.update_book(book_id, data)
+        try:
+            updated = BookService.update_book(book_id, data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         if updated:
             return jsonify({"message": "Book updated successfully"}), 200
@@ -127,6 +133,21 @@ class BookController:
 
         EntitlementService.grant_book(current_user._id, book_id, source="purchase", source_id=confirmed["_id"])
         return jsonify({"message": "Book purchased and added to your library"}), 200
+
+    @staticmethod
+    @token_required
+    def purchase_with_coins(current_user, token):
+        data = request.get_json() or {}
+        book_id = data.get("book_id")
+        if not book_id:
+            return jsonify({"error": "Missing book_id"}), 400
+        try:
+            result = BookService.purchase_with_coins(current_user._id, book_id)
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "not found" in message.lower() else 400
+            return jsonify({"error": message}), status
+        return jsonify(result), 200
 
     @staticmethod
     @token_required
@@ -319,6 +340,9 @@ books_blueprint.route("/get/<string:book_id>", methods=["GET"])(
 )
 books_blueprint.route("/purchase", methods=["POST"])(
     BookController.purchase_book
+)
+books_blueprint.route("/purchase-with-coins", methods=["POST"])(
+    BookController.purchase_with_coins
 )
 books_blueprint.route("/mark-chapter-read", methods=["POST"])(
     BookController.mark_chapter_read

@@ -7,6 +7,15 @@ from datetime import datetime
 from src.app.models.push_notification_model import PushNotificationModel
 
 ALLOWED_ROLES = ("user", "teacher", "admin")
+ADDRESS_FIELDS = (
+    "postal_code",
+    "street",
+    "number",
+    "complement",
+    "neighborhood",
+    "city",
+    "state",
+)
 
 
 class UserModel:
@@ -19,6 +28,9 @@ class UserModel:
         self.customer_id = customer_id
         self.asaas_customer_id = asaas_customer_id
         self.cpf_cnpj = kwargs.get("cpf_cnpj")
+        self.image = kwargs.get("image")
+        self.address = kwargs.get("address") or {}
+        self.coins = int(kwargs.get("coins") or 0)
         self.is_confirmed = kwargs.get("is_confirmed", False)
         self.must_change_password = bool(kwargs.get("must_change_password", False))
         self.roles = UserModel.normalize_roles(role=role, roles=roles)
@@ -72,6 +84,9 @@ class UserModel:
             "roles": self.roles,
             "must_change_password": bool(self.must_change_password),
             "cpf_cnpj": self.cpf_cnpj,
+            "image": self.image,
+            "address": self.address or {},
+            "coins": int(self.coins or 0),
         }
         result = mongo.db.users.insert_one(user_data)
         self._id = str(result.inserted_id)
@@ -99,6 +114,58 @@ class UserModel:
             {"_id": ObjectId(user_id)},
             {"$set": {"name": name}},
         )
+
+    @staticmethod
+    def normalize_address(data):
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("address must be an object")
+        return {
+            field: str(data.get(field) or "").strip()
+            for field in ADDRESS_FIELDS
+        }
+
+    @staticmethod
+    def update_profile(user_id, updates):
+        if not updates:
+            return UserModel.find_by_id(user_id)
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": updates},
+        )
+        if result.matched_count == 0:
+            return None
+        return UserModel.find_by_id(user_id)
+
+    @staticmethod
+    def increment_coins(user_id, amount):
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$inc": {"coins": int(amount)}},
+        )
+        if result.matched_count == 0:
+            return None
+        refreshed = mongo.db.users.find_one({"_id": ObjectId(user_id)}, {"coins": 1})
+        return int((refreshed or {}).get("coins") or 0)
+
+    @staticmethod
+    def spend_coins(user_id, amount):
+        amount = int(amount)
+        if amount <= 0:
+            return None
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id), "coins": {"$gte": amount}},
+            {"$inc": {"coins": -amount}},
+        )
+        if result.matched_count == 0:
+            return None
+        refreshed = mongo.db.users.find_one({"_id": ObjectId(user_id)}, {"coins": 1})
+        return int((refreshed or {}).get("coins") or 0)
+
+    @staticmethod
+    def get_document(user_id):
+        return mongo.db.users.find_one({"_id": ObjectId(user_id)})
 
     @staticmethod
     def find_by_cpf_cnpj(cpf_cnpj):
@@ -332,7 +399,10 @@ class UserModel:
                     {"email": {"$regex": search, "$options": "i"}},
                 ]
             }
-        cursor = mongo.db.users.find(query, {"name": 1, "email": 1, "role": 1, "roles": 1})
+        cursor = mongo.db.users.find(
+            query,
+            {"name": 1, "email": 1, "role": 1, "roles": 1, "coins": 1, "image": 1},
+        )
         users = []
         for user_data in cursor:
             roles = UserModel.normalize_roles(
@@ -345,6 +415,8 @@ class UserModel:
                 "email": user_data.get("email"),
                 "role": UserModel.primary_role(roles),
                 "roles": roles,
+                "coins": int(user_data.get("coins") or 0),
+                "image": user_data.get("image"),
             })
         return users
 

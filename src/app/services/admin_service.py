@@ -4,12 +4,15 @@ from datetime import date, datetime, timezone
 from bson import ObjectId
 
 from src.app import mongo
-from src.app.models.user_model import UserModel
+from src.app.models.user_model import ADDRESS_FIELDS, UserModel
 from src.app.models.user_streak_model import UserStreakModel
 from src.app.models.chat_model import ChatModel
 from src.app.models.classroom_membership_model import ClassroomMembershipModel
 from src.app.models.collection_model import CollectionModel
+from src.app.models.badge_model import BadgeModel
+from src.app.models.mission_model import MissionModel
 from src.app.services.classroom_service import ClassroomService
+from src.app.services.profile_service import empty_address
 
 
 def _iso(value):
@@ -93,6 +96,11 @@ class AdminService:
                 active_days.add(ts.date())
 
         last_access = logs[0]["created_at"] if logs else None
+        address = user.get("address") if isinstance(user.get("address"), dict) else {}
+        completed_missions = [
+            item for item in MissionModel.list_for_user(str(user_id))
+            if item.get("status") == "completed"
+        ]
 
         progress_docs = list(
             mongo.db.user_progress.find({"user_id": ObjectId(str(user_id))})
@@ -231,6 +239,12 @@ class AdminService:
                 "_id": str(user["_id"]),
                 "name": user.get("name") or "",
                 "email": user.get("email") or "",
+                "image": user.get("image"),
+                "cpf_cnpj": user.get("cpf_cnpj") or None,
+                "address": {**empty_address(), **{
+                    field: str(address.get(field) or "") for field in ADDRESS_FIELDS
+                }},
+                "coins": int(user.get("coins") or 0),
                 "role": UserModel.primary_role(roles),
                 "roles": roles,
                 "member_since": member_since,
@@ -264,5 +278,7 @@ class AdminService:
             ],
             "courses": courses,
             "chats": chats,
+            "badges": BadgeModel.list_for_user(str(user_id)),
+            "missions": completed_missions,
         }
         return _json_safe(payload)

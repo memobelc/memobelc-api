@@ -127,25 +127,28 @@ def _extract_credit_card(data):
 class BillingService:
     @staticmethod
     def _ensure_asaas_customer(user, cpf_cnpj=None):
+        stored_cpf = _normalize_cpf_cnpj(getattr(user, "cpf_cnpj", None))
+        effective_cpf = stored_cpf or cpf_cnpj
         if user.asaas_customer_id:
-            if cpf_cnpj:
+            if effective_cpf:
                 Asaas.update_customer(user.asaas_customer_id, {
                     "name": user.name or user.email,
                     "email": user.email,
-                    "cpfCnpj": cpf_cnpj,
+                    "cpfCnpj": effective_cpf,
                 })
-                UserModel.set_cpf_cnpj(user._id, cpf_cnpj)
-                user.cpf_cnpj = cpf_cnpj
+                if not stored_cpf and cpf_cnpj:
+                    UserModel.set_cpf_cnpj(user._id, cpf_cnpj)
+                    user.cpf_cnpj = cpf_cnpj
             return user.asaas_customer_id
         created = Asaas.create_customer(
             user.name,
             user.email,
             external_reference=str(user._id),
-            cpf_cnpj=cpf_cnpj,
+            cpf_cnpj=effective_cpf,
         )
         customer_id = created.get("id")
         UserModel.set_asaas_customer_id(user._id, customer_id)
-        if cpf_cnpj:
+        if not stored_cpf and cpf_cnpj:
             UserModel.set_cpf_cnpj(user._id, cpf_cnpj)
             user.cpf_cnpj = cpf_cnpj
         user.asaas_customer_id = customer_id
@@ -244,7 +247,9 @@ class BillingService:
         product_id = data.get("product_id")
         billing_type = _normalize_billing_type(data.get("billing_type"))
         coupon_code = data.get("coupon_code")
-        cpf_cnpj = _normalize_cpf_cnpj(data.get("cpf_cnpj") or getattr(user, "cpf_cnpj", None))
+        stored_cpf = _normalize_cpf_cnpj(getattr(user, "cpf_cnpj", None))
+        incoming_cpf = _normalize_cpf_cnpj(data.get("cpf_cnpj"))
+        cpf_cnpj = stored_cpf or incoming_cpf
         if not product_id:
             return {"error": "product_id is required"}, 400
 
@@ -308,6 +313,9 @@ class BillingService:
                 "error": "Informe um CPF ou CNPJ válido para assinar.",
                 "code": "cpf_required",
             }, 400
+        if not stored_cpf and incoming_cpf:
+            UserModel.set_cpf_cnpj(user._id, incoming_cpf)
+            user.cpf_cnpj = incoming_cpf
 
         if product_type == "plan":
             blocking = BillingService._blocking_subscription(user._id)
@@ -1002,9 +1010,14 @@ Equipe Memobelc
         asaas_card, holder_info, error = _extract_credit_card(data)
         if error:
             return {"error": error, "code": "credit_card_required"}, 400
-        cpf_cnpj = _normalize_cpf_cnpj(data.get("cpf_cnpj") or getattr(user, "cpf_cnpj", None))
+        stored_cpf = _normalize_cpf_cnpj(getattr(user, "cpf_cnpj", None))
+        incoming_cpf = _normalize_cpf_cnpj(data.get("cpf_cnpj"))
+        cpf_cnpj = stored_cpf or incoming_cpf
         if not cpf_cnpj:
             return {"error": "Informe um CPF ou CNPJ válido.", "code": "cpf_required"}, 400
+        if not stored_cpf and incoming_cpf:
+            UserModel.set_cpf_cnpj(user._id, incoming_cpf)
+            user.cpf_cnpj = incoming_cpf
         holder_info["email"] = user.email
         holder_info["cpfCnpj"] = cpf_cnpj
         remote_ip = _client_ip_from_data(data)

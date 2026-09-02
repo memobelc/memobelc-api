@@ -28,6 +28,8 @@ class BookModel:
         sale_mode="both",
         is_published=True,
         google_play_product_id=None,
+        coins_enabled=False,
+        coin_price=0,
         **kwargs,
     ):
         self._id = str(_id) if _id else None
@@ -48,6 +50,11 @@ class BookModel:
         self.sale_mode = sale_mode or "both"
         self.is_published = True if is_published is None else bool(is_published)
         self.google_play_product_id = google_play_product_id
+        self.coins_enabled = bool(coins_enabled)
+        try:
+            self.coin_price = int(coin_price or 0)
+        except (TypeError, ValueError):
+            self.coin_price = 0
 
     def save_to_db(self):
         """Salva o livro no banco de dados."""
@@ -69,6 +76,8 @@ class BookModel:
             'sale_mode': self.sale_mode or 'both',
             'is_published': self.is_published if self.is_published is not None else True,
             'google_play_product_id': self.google_play_product_id,
+            'coins_enabled': bool(self.coins_enabled),
+            'coin_price': int(self.coin_price or 0),
         }
 
         result = mongo.db.books.insert_one(book_data)
@@ -96,6 +105,8 @@ class BookModel:
             'sale_mode': self.sale_mode or 'both',
             'is_published': self.is_published if self.is_published is not None else True,
             'google_play_product_id': self.google_play_product_id,
+            'coins_enabled': bool(self.coins_enabled),
+            'coin_price': int(self.coin_price or 0),
         }
 
         result = mongo.db.books.update_one(
@@ -223,5 +234,7 @@ class BookModel:
             'sale_mode': self.sale_mode or 'both',
             'is_published': True if self.is_published is None else bool(self.is_published),
             'google_play_product_id': self.google_play_product_id,
+            'coins_enabled': bool(self.coins_enabled),
+            'coin_price': int(self.coin_price or 0),
         }
 

@@ -61,7 +61,7 @@ AUDIENCES = ("everyone", "non_subscribers", "subscribers", "plans", "manual")
 SALE_MODES = ("separate", "plans_only", "both")
 PRODUCT_TYPES = ("plan", "book", "bundle", "course", "classroom")
 PROVIDERS = ("asaas", "google_play", "manual", "external")
-GRANT_SOURCES = ("subscription", "purchase", "manual", "external")
+GRANT_SOURCES = ("subscription", "purchase", "manual", "external", "coins")
 NATIVE_BILLING_TYPES = ("PIX", "CREDIT_CARD")
 ASAAS_PAID_STATUSES = ("CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH")
 

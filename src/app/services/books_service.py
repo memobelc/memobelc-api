@@ -15,6 +15,22 @@ class BookService:
     """Service for managing books."""
 
     @staticmethod
+    def _coin_fields(data, existing=None):
+        existing = existing or {}
+        if "coins_enabled" in data:
+            coins_enabled = bool(data.get("coins_enabled"))
+        else:
+            coins_enabled = bool(existing.get("coins_enabled", False))
+        raw_price = data.get("coin_price") if "coin_price" in data else existing.get("coin_price")
+        try:
+            coin_price = int(raw_price or 0)
+        except (TypeError, ValueError):
+            coin_price = 0
+        if coins_enabled and coin_price < 1:
+            raise ValueError("coin_price must be at least 1 when coins are enabled")
+        return coins_enabled, max(coin_price, 0)
+
+    @staticmethod
     def create_book(data, admin_id):
         """Cria um novo livro: gera uma collection com nome e imagem do livro e um deck por capítulo."""
         titulo = data.get("titulo")
@@ -48,6 +64,8 @@ class BookService:
             }
             chapters_with_decks.append(chapter_data)
 
+        coins_enabled, coin_price = BookService._coin_fields(data)
+
         book = BookModel(
             titulo=titulo,
             autor=data.get("autor"),
@@ -61,6 +79,8 @@ class BookService:
             sale_mode=data.get("sale_mode") or "both",
             is_published=data.get("is_published", True),
             google_play_product_id=data.get("google_play_product_id"),
+            coins_enabled=coins_enabled,
+            coin_price=coin_price,
             chapters=chapters_with_decks,
             collection_id=collection_id,
             created_by=admin_id,
@@ -125,6 +145,8 @@ class BookService:
             }
             chapters_with_decks.append(chapter_data)
 
+        coins_enabled, coin_price = BookService._coin_fields(data, book)
+
         book_obj = BookModel(
             _id=book_id,
             titulo=data.get("titulo", book.get("titulo")),
@@ -139,6 +161,8 @@ class BookService:
             sale_mode=data.get("sale_mode", book.get("sale_mode") or "both"),
             is_published=data.get("is_published", book.get("is_published", True)),
             google_play_product_id=data.get("google_play_product_id", book.get("google_play_product_id")),
+            coins_enabled=coins_enabled,
+            coin_price=coin_price,
             chapters=chapters_with_decks,
             collection_id=collection_id,
             created_at=book.get("created_at"),
@@ -447,4 +471,48 @@ class BookService:
         )
         read_ordens = updated.get("read_chapters_ordem", []) if updated else []
         return {"read_chapters_ordem": read_ordens}
+
+    @staticmethod
+    def purchase_with_coins(user_id, book_id):
+        from src.app.models.coin_ledger_model import CoinLedgerModel
+        from src.app.services.entitlement_service import EntitlementService
+
+        book = BookModel.get_by_id(book_id)
+        if not book:
+            raise ValueError("Book not found")
+        if book.get("is_free"):
+            raise ValueError("This book is free")
+        if book.get("sale_mode") == "plans_only":
+            raise ValueError("This book is only available through a plan")
+        if not book.get("coins_enabled"):
+            raise ValueError("This book cannot be purchased with coins")
+        coin_price = int(book.get("coin_price") or 0)
+        if coin_price < 1:
+            raise ValueError("This book cannot be purchased with coins")
+
+        existing = mongo.db.user_books.find_one({
+            "user_id": ObjectId(str(user_id)),
+            "book_id": ObjectId(str(book_id)),
+        })
+        if existing or book_id in EntitlementService.user_book_ids(user_id):
+            raise ValueError("Book already in your library")
+
+        balance = UserModel.spend_coins(user_id, coin_price)
+        if balance is None:
+            raise ValueError("Insufficient coins")
+
+        ledger = CoinLedgerModel.record(
+            user_id,
+            -coin_price,
+            "book_purchase",
+            reason=book.get("titulo"),
+            book_id=book_id,
+        )
+        EntitlementService.grant_book(
+            user_id,
+            book_id,
+            source="coins",
+            source_id=ledger.get("_id"),
+        )
+        return {"granted": True, "coins": balance, "book_id": book_id, "coin_price": coin_price}
 
