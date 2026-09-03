@@ -314,3 +314,180 @@ def test_ranking_orders_by_xp(client):
     assert top["xp"] == 5
     assert "first_step" in top["badges"]
     assert "perfect" in top["badges"]
+
+
+def _create_lesson(client, ctx, title="Lesson 1"):
+    created = client.post(
+        "/course/lesson/create",
+        data=json.dumps({
+            "title": title,
+            "module_id": ctx["module_id"],
+            "course_id": ctx["course_id"],
+            "video_url": "https://youtu.be/abcdefghijk",
+        }),
+        headers=ctx["teacher_headers"],
+    )
+    assert created.status_code == 201
+    return created.get_json()["lesson_id"]
+
+
+def test_student_can_rate_lesson_and_update(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+
+    bad = client.put(
+        f"/course/lesson/{lesson_id}/rating",
+        data=json.dumps({"stars": 0}),
+        headers=ctx["student_headers"],
+    )
+    assert bad.status_code == 400
+
+    first = client.put(
+        f"/course/lesson/{lesson_id}/rating",
+        data=json.dumps({"stars": 4}),
+        headers=ctx["student_headers"],
+    )
+    assert first.status_code == 200
+    assert first.get_json()["stars"] == 4
+
+    updated = client.put(
+        f"/course/lesson/{lesson_id}/rating",
+        data=json.dumps({"stars": 2}),
+        headers=ctx["student_headers"],
+    )
+    assert updated.status_code == 200
+    assert updated.get_json()["stars"] == 2
+
+    lesson = client.get(
+        f"/course/lesson/{lesson_id}",
+        headers=ctx["student_headers"],
+    )
+    assert lesson.status_code == 200
+    assert lesson.get_json()["my_rating"] == 2
+
+
+def test_unrated_viewed_lesson_counts_as_five(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+
+    client.post(
+        f"/course/lesson/{lesson_id}/viewed",
+        data=json.dumps({}),
+        headers=ctx["student_headers"],
+    )
+
+    forbidden = client.get(
+        f"/course/{ctx['course_id']}/ratings",
+        headers=ctx["student_headers"],
+    )
+    assert forbidden.status_code == 403
+
+    ratings = client.get(
+        f"/course/{ctx['course_id']}/ratings",
+        headers=ctx["teacher_headers"],
+    )
+    assert ratings.status_code == 200
+    data = ratings.get_json()
+    lesson = data["modules"][0]["lessons"][0]
+    assert lesson["avg"] == 5
+    assert lesson["explicit_count"] == 0
+    assert lesson["implicit_count"] == 1
+
+
+def test_module_rating_has_weight_three(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+
+    client.post(
+        f"/course/lesson/{lesson_id}/viewed",
+        data=json.dumps({}),
+        headers=ctx["student_headers"],
+    )
+    client.put(
+        f"/course/lesson/{lesson_id}/rating",
+        data=json.dumps({"stars": 1}),
+        headers=ctx["student_headers"],
+    )
+    client.put(
+        f"/course/module/{ctx['module_id']}/rating",
+        data=json.dumps({"stars": 5}),
+        headers=ctx["student_headers"],
+    )
+
+    ratings = client.get(
+        f"/course/{ctx['course_id']}/ratings",
+        headers=ctx["teacher_headers"],
+    )
+    data = ratings.get_json()
+    assert data["course"]["weight_module"] == 3
+    assert data["course"]["avg"] == 4.0
+    assert data["modules"][0]["avg"] == 5
+    assert data["modules"][0]["lessons"][0]["avg"] == 1
+
+
+def test_module_rating_prompt_and_dismiss(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+
+    before = client.get(
+        f"/course/{ctx['course_id']}",
+        headers=ctx["student_headers"],
+    )
+    assert before.status_code == 200
+    module = before.get_json()["modules"][0]
+    assert module["rating_prompt"] is False
+    assert module["can_rate"] is False
+    assert module["my_rating"] is None
+
+    client.post(
+        f"/course/lesson/{lesson_id}/viewed",
+        data=json.dumps({}),
+        headers=ctx["student_headers"],
+    )
+    ready = client.get(
+        f"/course/{ctx['course_id']}",
+        headers=ctx["student_headers"],
+    )
+    module = ready.get_json()["modules"][0]
+    assert module["can_rate"] is True
+    assert module["rating_prompt"] is True
+
+    dismissed = client.post(
+        f"/course/module/{ctx['module_id']}/rating/dismiss",
+        data=json.dumps({}),
+        headers=ctx["student_headers"],
+    )
+    assert dismissed.status_code == 200
+    after_dismiss = client.get(
+        f"/course/{ctx['course_id']}",
+        headers=ctx["student_headers"],
+    )
+    module = after_dismiss.get_json()["modules"][0]
+    assert module["rating_prompt"] is False
+    assert module["can_rate"] is True
+    assert module["my_rating"] is None
+
+    rated = client.put(
+        f"/course/module/{ctx['module_id']}/rating",
+        data=json.dumps({"stars": 3}),
+        headers=ctx["student_headers"],
+    )
+    assert rated.status_code == 200
+    after_rate = client.get(
+        f"/course/{ctx['course_id']}",
+        headers=ctx["student_headers"],
+    )
+    module = after_rate.get_json()["modules"][0]
+    assert module["my_rating"] == 3
+    assert module["rating_prompt"] is False
+
+
+def test_teacher_cannot_rate_own_course(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+    response = client.put(
+        f"/course/lesson/{lesson_id}/rating",
+        data=json.dumps({"stars": 5}),
+        headers=ctx["teacher_headers"],
+    )
+    assert response.status_code == 403

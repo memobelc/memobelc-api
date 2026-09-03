@@ -40,6 +40,11 @@ def create_app():
             AffiliateService.ensure_indexes()
         except Exception:
             pass
+        try:
+            from .models.course_model import CourseRatingModel
+            CourseRatingModel.ensure_indexes()
+        except Exception:
+            pass
 
     SWAGGER_URL = "/doc"
     # Usar rota da própria app para o spec (mesma origem, evita CORS no fetch do spec)

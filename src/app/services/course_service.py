@@ -1,9 +1,13 @@
 from datetime import datetime, timezone
+from bson.errors import InvalidId
 from src.app.models.course_model import (
     CourseModel, ModuleModel, LessonModel, ActivityModel,
     QuestionModel, StudentAnswerModel, LessonViewModel,
-    count_blanks,
+    CourseRatingModel, count_blanks,
 )
+
+MODULE_RATING_WEIGHT = 3
+UNRATED_STARS = 5
 
 
 class CourseService:
@@ -67,8 +71,52 @@ class CourseService:
             module['activities'] = ActivityModel.get_by_module(
                 module['_id'], include_hidden=is_teacher
             )
+        CourseService._attach_student_ratings(course, modules, user_id, is_teacher)
         course['modules'] = modules
         return course
+
+    @staticmethod
+    def _attach_student_ratings(course, modules, user_id, is_teacher):
+        if not user_id or is_teacher:
+            for module in modules:
+                module['my_rating'] = None
+                module['rating_prompt'] = False
+                module['can_rate'] = False
+                for lesson in module.get('lessons') or []:
+                    lesson['my_rating'] = None
+            return
+
+        ratings = CourseRatingModel.get_student_ratings_for_course(
+            user_id, course['_id']
+        )
+        by_key = {
+            (r['target_type'], r['target_id']): r
+            for r in ratings
+            if r
+        }
+        for module in modules:
+            lessons = module.get('lessons') or []
+            visible_ids = [lesson['_id'] for lesson in lessons]
+            viewed_all = bool(visible_ids) and all(
+                LessonViewModel.has_viewed(lid, user_id) for lid in visible_ids
+            )
+            for lesson in lessons:
+                lesson_rating = by_key.get(
+                    (CourseRatingModel.TARGET_LESSON, lesson['_id'])
+                )
+                lesson['my_rating'] = (
+                    lesson_rating.get('stars') if lesson_rating else None
+                )
+            module_rating = by_key.get(
+                (CourseRatingModel.TARGET_MODULE, module['_id'])
+            )
+            my_stars = module_rating.get('stars') if module_rating else None
+            dismissed = bool(module_rating and module_rating.get('dismissed'))
+            module['my_rating'] = my_stars
+            module['can_rate'] = viewed_all
+            module['rating_prompt'] = (
+                viewed_all and my_stars is None and not dismissed
+            )
 
     @staticmethod
     def get_public_course(course_id):
@@ -398,6 +446,225 @@ class CourseService:
     def get_lesson_view_status(lesson_id, student_id):
         viewed = LessonViewModel.has_viewed(lesson_id, student_id)
         return {'viewed': viewed}
+
+    @staticmethod
+    def get_lesson_for_user(lesson_id, user_id=None):
+        try:
+            lesson = LessonModel.get_by_id(lesson_id)
+        except (InvalidId, TypeError):
+            return None
+        if not lesson:
+            return None
+        lesson['my_rating'] = None
+        if user_id:
+            rating = CourseRatingModel.get(
+                user_id, CourseRatingModel.TARGET_LESSON, lesson_id
+            )
+            if rating:
+                lesson['my_rating'] = rating.get('stars')
+        return lesson
+
+    @staticmethod
+    def parse_stars(value):
+        try:
+            stars = int(value)
+        except (TypeError, ValueError):
+            return None
+        if stars < 1 or stars > 5:
+            return None
+        return stars
+
+    @staticmethod
+    def _course_teacher_id(course):
+        if not course:
+            return None
+        return str(course.get('teacher_id')) if course.get('teacher_id') else None
+
+    @staticmethod
+    def rate_lesson(lesson_id, student_id, stars):
+        try:
+            lesson = LessonModel.get_by_id(lesson_id)
+        except (InvalidId, TypeError):
+            lesson = None
+        if not lesson:
+            return None, 'Lesson not found'
+        course = CourseModel.get_by_id(lesson.get('course_id'))
+        if CourseService._course_teacher_id(course) == str(student_id):
+            return None, 'Teachers cannot rate their own course'
+        rating = CourseRatingModel.upsert(
+            student_id=student_id,
+            course_id=lesson.get('course_id'),
+            target_type=CourseRatingModel.TARGET_LESSON,
+            target_id=lesson_id,
+            stars=stars,
+        )
+        return rating, None
+
+    @staticmethod
+    def rate_module(module_id, student_id, stars):
+        try:
+            module = ModuleModel.get_by_id(module_id)
+        except (InvalidId, TypeError):
+            module = None
+        if not module:
+            return None, 'Module not found'
+        course = CourseModel.get_by_id(module.get('course_id'))
+        if CourseService._course_teacher_id(course) == str(student_id):
+            return None, 'Teachers cannot rate their own course'
+        rating = CourseRatingModel.upsert(
+            student_id=student_id,
+            course_id=module.get('course_id'),
+            target_type=CourseRatingModel.TARGET_MODULE,
+            target_id=module_id,
+            stars=stars,
+        )
+        return rating, None
+
+    @staticmethod
+    def dismiss_module_rating(module_id, student_id):
+        try:
+            module = ModuleModel.get_by_id(module_id)
+        except (InvalidId, TypeError):
+            module = None
+        if not module:
+            return None, 'Module not found'
+        course = CourseModel.get_by_id(module.get('course_id'))
+        if CourseService._course_teacher_id(course) == str(student_id):
+            return None, 'Teachers cannot rate their own course'
+        rating = CourseRatingModel.upsert(
+            student_id=student_id,
+            course_id=module.get('course_id'),
+            target_type=CourseRatingModel.TARGET_MODULE,
+            target_id=module_id,
+            dismissed=True,
+        )
+        return rating, None
+
+    @staticmethod
+    def _rating_stats(effective_scores, explicit_count):
+        if not effective_scores:
+            return {
+                'avg': None,
+                'explicit_count': 0,
+                'implicit_count': 0,
+                'distribution': {str(i): 0 for i in range(1, 6)},
+            }
+        distribution = {str(i): 0 for i in range(1, 6)}
+        for score in effective_scores:
+            key = str(int(score))
+            if key in distribution:
+                distribution[key] += 1
+        return {
+            'avg': round(sum(effective_scores) / len(effective_scores), 2),
+            'explicit_count': explicit_count,
+            'implicit_count': len(effective_scores) - explicit_count,
+            'distribution': distribution,
+        }
+
+    @staticmethod
+    def get_course_ratings(course_id):
+        course = CourseModel.get_by_id(course_id)
+        if not course:
+            return None
+
+        ratings = CourseRatingModel.get_by_course(course_id)
+        rating_map = {
+            (r['target_type'], r['target_id'], r['student_id']): r
+            for r in ratings
+            if r
+        }
+        modules = ModuleModel.get_by_course(course_id)
+        lesson_avgs = []
+        module_avgs = []
+        modules_out = []
+
+        for module in modules:
+            mid = module['_id']
+            lessons = LessonModel.get_by_module(mid, include_hidden=True)
+            visible_lessons = LessonModel.get_by_module(mid, include_hidden=False)
+            visible_ids = [lesson['_id'] for lesson in visible_lessons]
+
+            lessons_out = []
+            all_viewer_ids = set()
+            for lesson in lessons:
+                viewers = LessonViewModel.get_viewers(lesson['_id'])
+                viewer_ids = [v['student_id'] for v in viewers]
+                all_viewer_ids.update(viewer_ids)
+                effective = []
+                explicit = 0
+                for sid in viewer_ids:
+                    rating = rating_map.get(
+                        (CourseRatingModel.TARGET_LESSON, lesson['_id'], sid)
+                    )
+                    if rating and rating.get('stars') is not None:
+                        effective.append(rating['stars'])
+                        explicit += 1
+                    else:
+                        effective.append(UNRATED_STARS)
+                stats = CourseService._rating_stats(effective, explicit)
+                if stats['avg'] is not None:
+                    lesson_avgs.append(stats['avg'])
+                lessons_out.append({
+                    '_id': lesson['_id'],
+                    'title': lesson.get('title'),
+                    **stats,
+                })
+
+            completers = []
+            if visible_ids:
+                candidate_ids = all_viewer_ids
+                for sid in candidate_ids:
+                    if all(LessonViewModel.has_viewed(lid, sid) for lid in visible_ids):
+                        completers.append(sid)
+
+            effective = []
+            explicit = 0
+            for sid in completers:
+                rating = rating_map.get(
+                    (CourseRatingModel.TARGET_MODULE, mid, sid)
+                )
+                if rating and rating.get('stars') is not None:
+                    effective.append(rating['stars'])
+                    explicit += 1
+                else:
+                    effective.append(UNRATED_STARS)
+            module_stats = CourseService._rating_stats(effective, explicit)
+            if module_stats['avg'] is not None:
+                module_avgs.append(module_stats['avg'])
+            modules_out.append({
+                'module_id': mid,
+                'name': module.get('name'),
+                'weight': MODULE_RATING_WEIGHT,
+                **module_stats,
+                'lessons': lessons_out,
+            })
+
+        denom = len(lesson_avgs) + MODULE_RATING_WEIGHT * len(module_avgs)
+        if denom:
+            course_avg = (
+                sum(lesson_avgs) + MODULE_RATING_WEIGHT * sum(module_avgs)
+            ) / denom
+            course_avg = round(course_avg, 2)
+        else:
+            course_avg = None
+
+        explicit_count = sum(m['explicit_count'] for m in modules_out)
+        implicit_count = sum(m['implicit_count'] for m in modules_out)
+        for module in modules_out:
+            for lesson in module['lessons']:
+                explicit_count += lesson['explicit_count']
+                implicit_count += lesson['implicit_count']
+
+        return {
+            'course': {
+                'avg': course_avg,
+                'explicit_count': explicit_count,
+                'implicit_count': implicit_count,
+                'weight_lesson': 1,
+                'weight_module': MODULE_RATING_WEIGHT,
+            },
+            'modules': modules_out,
+        }
 
     @staticmethod
     def get_students_progress(course_id):

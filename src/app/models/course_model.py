@@ -207,6 +207,7 @@ class ModuleModel:
 
     @staticmethod
     def delete(module_id):
+        CourseRatingModel.delete_by_target(CourseRatingModel.TARGET_MODULE, module_id)
         mongo.db.course_modules.delete_one({'_id': ObjectId(module_id)})
 
     @staticmethod
@@ -307,6 +308,7 @@ class LessonModel:
     @staticmethod
     def delete(lesson_id):
         mongo.db.lesson_views.delete_many({'lesson_id': ObjectId(lesson_id)})
+        CourseRatingModel.delete_by_target(CourseRatingModel.TARGET_LESSON, lesson_id)
         mongo.db.lessons.delete_one({'_id': ObjectId(lesson_id)})
 
     @staticmethod
@@ -560,6 +562,107 @@ class LessonViewModel:
     @staticmethod
     def delete_by_lesson(lesson_id):
         mongo.db.lesson_views.delete_many({'lesson_id': ObjectId(lesson_id)})
+
+
+class CourseRatingModel:
+    """Student star ratings for lessons and modules."""
+
+    TARGET_LESSON = 'lesson'
+    TARGET_MODULE = 'module'
+    VALID_TARGETS = (TARGET_LESSON, TARGET_MODULE)
+
+    @staticmethod
+    def ensure_indexes():
+        mongo.db.course_ratings.create_index(
+            [('student_id', 1), ('target_type', 1), ('target_id', 1)],
+            unique=True,
+        )
+        mongo.db.course_ratings.create_index([('course_id', 1), ('target_type', 1)])
+        mongo.db.course_ratings.create_index('target_id')
+
+    @staticmethod
+    def _to_dict(doc):
+        if not doc:
+            return None
+        stars = doc.get('stars')
+        return {
+            '_id': str(doc['_id']) if doc.get('_id') else None,
+            'student_id': str(doc['student_id']) if doc.get('student_id') else None,
+            'course_id': str(doc['course_id']) if doc.get('course_id') else None,
+            'target_type': doc.get('target_type'),
+            'target_id': str(doc['target_id']) if doc.get('target_id') else None,
+            'stars': int(stars) if stars is not None else None,
+            'dismissed': bool(doc.get('dismissed')),
+            'created_at': (
+                doc['created_at'].isoformat()
+                if doc.get('created_at') and hasattr(doc['created_at'], 'isoformat')
+                else doc.get('created_at')
+            ),
+            'updated_at': (
+                doc['updated_at'].isoformat()
+                if doc.get('updated_at') and hasattr(doc['updated_at'], 'isoformat')
+                else doc.get('updated_at')
+            ),
+        }
+
+    @staticmethod
+    def upsert(student_id, course_id, target_type, target_id, stars=None, dismissed=False):
+        now = datetime.now(timezone.utc)
+        filt = {
+            'student_id': ObjectId(student_id),
+            'target_type': target_type,
+            'target_id': ObjectId(target_id),
+        }
+        existing = mongo.db.course_ratings.find_one(filt)
+        set_fields = {
+            'course_id': ObjectId(course_id),
+            'dismissed': bool(dismissed),
+            'updated_at': now,
+        }
+        if stars is not None:
+            set_fields['stars'] = int(stars)
+            set_fields['dismissed'] = False
+        elif dismissed:
+            if existing is None or existing.get('stars') is None:
+                set_fields['stars'] = None
+        update = {'$set': set_fields}
+        if existing is None:
+            update['$setOnInsert'] = {'created_at': now}
+        mongo.db.course_ratings.update_one(filt, update, upsert=True)
+        return CourseRatingModel.get(student_id, target_type, target_id)
+
+    @staticmethod
+    def get(student_id, target_type, target_id):
+        doc = mongo.db.course_ratings.find_one({
+            'student_id': ObjectId(student_id),
+            'target_type': target_type,
+            'target_id': ObjectId(target_id),
+        })
+        return CourseRatingModel._to_dict(doc)
+
+    @staticmethod
+    def get_by_course(course_id):
+        docs = list(mongo.db.course_ratings.find({'course_id': ObjectId(course_id)}))
+        return [CourseRatingModel._to_dict(doc) for doc in docs]
+
+    @staticmethod
+    def get_student_ratings_for_course(student_id, course_id):
+        docs = list(mongo.db.course_ratings.find({
+            'student_id': ObjectId(student_id),
+            'course_id': ObjectId(course_id),
+        }))
+        return [CourseRatingModel._to_dict(doc) for doc in docs]
+
+    @staticmethod
+    def delete_by_target(target_type, target_id):
+        mongo.db.course_ratings.delete_many({
+            'target_type': target_type,
+            'target_id': ObjectId(target_id),
+        })
+
+    @staticmethod
+    def delete_by_course(course_id):
+        mongo.db.course_ratings.delete_many({'course_id': ObjectId(course_id)})
 
 
 class StudentAnswerModel:

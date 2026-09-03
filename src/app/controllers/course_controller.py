@@ -196,8 +196,9 @@ class CourseController:
     @staticmethod
     @token_required
     def get_lesson(current_user, token, lesson_id):
-        from src.app.models.course_model import LessonModel
-        lesson = LessonModel.get_by_id(lesson_id)
+        lesson = CourseService.get_lesson_for_user(
+            lesson_id, user_id=str(current_user._id)
+        )
         if not lesson:
             return jsonify({'error': 'Lesson not found'}), 404
         return jsonify(lesson), 200
@@ -463,6 +464,59 @@ class CourseController:
             return jsonify({'error': 'Course not found'}), 404
         return jsonify(result), 200
 
+    # ── Ratings ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    @token_required
+    def rate_lesson(current_user, token, lesson_id):
+        data = request.get_json() or {}
+        stars = CourseService.parse_stars(data.get('stars'))
+        if stars is None:
+            return jsonify({'error': 'stars must be an integer from 1 to 5'}), 400
+        rating, error = CourseService.rate_lesson(
+            lesson_id, str(current_user._id), stars
+        )
+        if error:
+            status = 403 if 'Teachers' in error else 404
+            return jsonify({'error': error}), status
+        return jsonify(rating), 200
+
+    @staticmethod
+    @token_required
+    def rate_module(current_user, token, module_id):
+        data = request.get_json() or {}
+        stars = CourseService.parse_stars(data.get('stars'))
+        if stars is None:
+            return jsonify({'error': 'stars must be an integer from 1 to 5'}), 400
+        rating, error = CourseService.rate_module(
+            module_id, str(current_user._id), stars
+        )
+        if error:
+            status = 403 if 'Teachers' in error else 404
+            return jsonify({'error': error}), status
+        return jsonify(rating), 200
+
+    @staticmethod
+    @token_required
+    def dismiss_module_rating(current_user, token, module_id):
+        rating, error = CourseService.dismiss_module_rating(
+            module_id, str(current_user._id)
+        )
+        if error:
+            status = 403 if 'Teachers' in error else 404
+            return jsonify({'error': error}), status
+        return jsonify(rating), 200
+
+    @staticmethod
+    @token_required
+    def get_course_ratings(current_user, token, course_id):
+        if not current_user.has_role('teacher'):
+            return jsonify({'error': 'Only teachers can view ratings'}), 403
+        result = CourseService.get_course_ratings(course_id)
+        if not result:
+            return jsonify({'error': 'Course not found'}), 404
+        return jsonify(result), 200
+
 
 course_blueprint = Blueprint('course_blueprint', __name__)
 
@@ -515,3 +569,9 @@ course_blueprint.route('/activity/<activity_id>/my_answer', methods=['GET'])(Cou
 course_blueprint.route('/lesson/<lesson_id>/viewed', methods=['POST'])(CourseController.mark_lesson_viewed)
 course_blueprint.route('/<course_id>/students_progress', methods=['GET'])(CourseController.get_students_progress)
 course_blueprint.route('/<course_id>/ranking', methods=['GET'])(CourseController.get_course_ranking)
+
+# Ratings
+course_blueprint.route('/lesson/<lesson_id>/rating', methods=['PUT'])(CourseController.rate_lesson)
+course_blueprint.route('/module/<module_id>/rating', methods=['PUT'])(CourseController.rate_module)
+course_blueprint.route('/module/<module_id>/rating/dismiss', methods=['POST'])(CourseController.dismiss_module_rating)
+course_blueprint.route('/<course_id>/ratings', methods=['GET'])(CourseController.get_course_ratings)
