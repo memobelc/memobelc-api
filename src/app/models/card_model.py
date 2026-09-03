@@ -5,6 +5,12 @@ from bson import ObjectId
 from src.app import mongo
 from src.app.models.deck_model import DeckModel
 from src.app.models.user_progress_model import UserProgressModel
+from src.app.models.publish_status import (
+    DEFAULT_STATUS,
+    isoformat_dt,
+    normalize_status,
+    parse_scheduled_at,
+)
 
 
 class CardModel:
@@ -27,6 +33,8 @@ class CardModel:
         updated_at=None,
         deck=None,
         user=None,
+        status=None,
+        scheduled_at=None,
         **kwargs,
     ):
         """
@@ -56,6 +64,8 @@ class CardModel:
         self.updated_at = updated_at or datetime.now(timezone.utc)
         self.deck = deck
         self.user = user
+        self.status = normalize_status(status)
+        self.scheduled_at = parse_scheduled_at(scheduled_at)
 
     @staticmethod
     def get_user_by_deck(deck_id):
@@ -101,6 +111,8 @@ class CardModel:
             "image": self.image,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "status": self.status or DEFAULT_STATUS,
+            "scheduled_at": self.scheduled_at,
         }
 
         users = CardModel.get_user_by_deck(self.deck) if self.deck else []
@@ -116,8 +128,11 @@ class CardModel:
                 self.deck, [str(result.inserted_id)]
             )
 
+        from src.app.models.lesson_deck_model import ContentVisibility
+
         for i in users:
-            UserProgressModel.create_or_update(i, self.deck, self._id)
+            if ContentVisibility.student_should_get_progress(i, self.deck, self._id):
+                UserProgressModel.create_or_update(i, self.deck, self._id)
 
         return str(result.inserted_id)
 
@@ -134,7 +149,9 @@ class CardModel:
             "image": image,
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
-            "cards": []
+            "cards": [],
+            "status": DEFAULT_STATUS,
+            "scheduled_at": None,
         }
         result = mongo.db.decks.insert_one(deck_data)
         deck_id = str(result.inserted_id)
@@ -163,10 +180,33 @@ class CardModel:
         return None
 
     @staticmethod
-    def get_cards_by_deck(deck_id):
+    def get_cards_by_deck(deck_id, user_id=None):
         deck = DeckModel.get_by_id(deck_id)
         if not deck:
             return {"cards": []}
+        from src.app.models.lesson_deck_model import ContentVisibility
+        from src.app.models.classroom_membership_model import ClassroomMembershipModel
+
+        collection = ContentVisibility.find_collection_for_deck(deck_id)
+        freeze = None
+        if collection and collection.get("classroom") and user_id:
+            freeze = ClassroomMembershipModel.get_freeze_for_collection(
+                user_id, collection.get("_id")
+            )
+        if freeze:
+            allowed_cards = set(freeze["allowed_cards"].get(str(deck_id)) or [])
+            deck["cards"] = [
+                card_id for card_id in deck.get("cards", []) if str(card_id) in allowed_cards
+            ]
+        elif user_id:
+            is_teacher = ContentVisibility.is_classroom_teacher(collection, user_id)
+            filtered = ContentVisibility.filter_deck_for_user(
+                deck, user_id, collection, is_teacher=is_teacher
+            )
+            if not filtered:
+                return {"cards": []}
+            deck = filtered
+
         list_cards = []
         for card_id in deck.get("cards", []):
             card_doc = mongo.db.cards.find_one({"_id": ObjectId(card_id)})
@@ -206,6 +246,8 @@ class CardModel:
             updated_at=card_data.get("updated_at"),
             deck=card_data.get("deck"),
             user=card_data.get("user"),
+            status=card_data.get("status"),
+            scheduled_at=card_data.get("scheduled_at"),
         )
 
     def to_dict(self):
@@ -222,4 +264,6 @@ class CardModel:
             "image": self.image,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "status": self.status or DEFAULT_STATUS,
+            "scheduled_at": isoformat_dt(self.scheduled_at),
         }

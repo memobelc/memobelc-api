@@ -22,18 +22,23 @@ class CardController:
         user_id = data.get("user_id") if data else None
         deck_id = data.get("deck_id") if data else None
 
-        result = CardService.create_card(
-            payload["front"],
-            payload["back"],
-            deck_id,
-            user_id,
-            payload["audio"],
-            payload["media_type"],
-            payload["card_type"],
-            payload["options"],
-            payload["correct_index"],
-            payload["image"],
-        )
+        try:
+            result = CardService.create_card(
+                payload["front"],
+                payload["back"],
+                deck_id,
+                user_id,
+                payload["audio"],
+                payload["media_type"],
+                payload["card_type"],
+                payload["options"],
+                payload["correct_index"],
+                payload["image"],
+                status=payload.get("status"),
+                scheduled_at=payload.get("scheduled_at"),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result), 201
     
     @staticmethod
@@ -68,7 +73,8 @@ class CardController:
     def get_cards_by_deck(deck_id):
         "This Method is responsible for get all cards in deck"
         
-        response = CardService.get_cards_by_deck(deck_id)
+        user_id = request.args.get("user_id")
+        response = CardService.get_cards_by_deck(deck_id, user_id=user_id)
         
         if response:
             return jsonify(response), 200

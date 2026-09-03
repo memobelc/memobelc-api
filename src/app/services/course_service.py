@@ -71,6 +71,10 @@ class CourseService:
             module['activities'] = ActivityModel.get_by_module(
                 module['_id'], include_hidden=is_teacher
             )
+            for lesson in module.get('lessons') or []:
+                lesson['decks'] = CourseService.list_lesson_decks(
+                    lesson['_id'], user_id=user_id, is_teacher=is_teacher
+                )
         CourseService._attach_student_ratings(course, modules, user_id, is_teacher)
         course['modules'] = modules
         return course
@@ -462,6 +466,16 @@ class CourseService:
             )
             if rating:
                 lesson['my_rating'] = rating.get('stars')
+        is_teacher = False
+        if user_id:
+            course = CourseModel.get_by_id(lesson.get('course_id'))
+            is_teacher = CourseService._course_teacher_id(course) == str(user_id)
+        lesson['viewed'] = bool(
+            user_id and LessonViewModel.has_viewed(lesson_id, user_id)
+        )
+        lesson['decks'] = CourseService.list_lesson_decks(
+            lesson_id, user_id=user_id, is_teacher=is_teacher
+        )
         return lesson
 
     @staticmethod
@@ -1077,3 +1091,220 @@ class CourseService:
             'me': me,
             'total_activities': len(activities),
         }
+
+    # ── Lesson decks ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _lesson_classroom(lesson_id):
+        try:
+            lesson = LessonModel.get_by_id(lesson_id)
+        except (InvalidId, TypeError):
+            lesson = None
+        if not lesson:
+            return None, None, None, 'Lesson not found'
+        course = CourseModel.get_by_id(lesson.get('course_id'))
+        if not course:
+            return lesson, None, None, 'Course not found'
+        from src.app.models.classroom_model import ClassroomModel
+        classroom = ClassroomModel.get_by_id(course.get('classroom_id'))
+        return lesson, course, classroom, None
+
+    @staticmethod
+    def _serialize_lesson_deck(link, user_id, is_teacher, viewed):
+        from src.app.models.deck_model import DeckModel
+        from src.app.models.lesson_deck_model import StudentLessonDeckModel
+        from src.app.models.publish_status import is_released
+
+        deck = DeckModel.get_by_id(link['deck_id'])
+        if not deck:
+            return None
+        released = is_released(deck.get('status'), deck.get('scheduled_at'))
+        if not is_teacher and not released:
+            return None
+        unlocked = False
+        if user_id:
+            unlocked = StudentLessonDeckModel.has_unlocked(
+                user_id, link['lesson_id'], link['deck_id']
+            )
+        card_ids = link.get('card_ids') or []
+        total = len(card_ids) if card_ids else len(deck.get('cards') or [])
+        return {
+            'deck_id': link['deck_id'],
+            'lesson_id': link['lesson_id'],
+            'name': deck.get('name'),
+            'image': deck.get('image'),
+            'status': deck.get('status') or 'published',
+            'scheduled_at': deck.get('scheduled_at'),
+            'card_ids': card_ids,
+            'whole_deck': not bool(card_ids),
+            'total_cards': total,
+            'unlocked': unlocked,
+            'viewed': viewed,
+            'can_unlock': bool(user_id) and not is_teacher and released and viewed and not unlocked,
+        }
+
+    @staticmethod
+    def list_lesson_decks(lesson_id, user_id=None, is_teacher=False):
+        from src.app.models.lesson_deck_model import LessonDeckModel
+
+        viewed = bool(
+            user_id and not is_teacher and LessonViewModel.has_viewed(lesson_id, user_id)
+        )
+        if is_teacher:
+            viewed = True
+        items = []
+        for link in LessonDeckModel.get_by_lesson(lesson_id):
+            serialized = CourseService._serialize_lesson_deck(
+                link, user_id, is_teacher, viewed
+            )
+            if serialized:
+                items.append(serialized)
+        return items
+
+    @staticmethod
+    def link_lesson_deck(lesson_id, user_id, data):
+        from src.app.models.deck_model import DeckModel
+        from src.app.models.lesson_deck_model import LessonDeckModel
+        from src.app.models.publish_status import validate_status_payload
+        from src.app.services.deck_service import DeckService
+
+        lesson, course, classroom, error = CourseService._lesson_classroom(lesson_id)
+        if error:
+            return None, error, 404
+        if CourseService._course_teacher_id(course) != str(user_id):
+            return None, 'Only the course teacher can link decks', 403
+        collection_id = classroom.get('collection') if classroom else None
+        if not collection_id:
+            return None, 'Classroom collection not found', 400
+
+        card_ids = data.get('card_ids') or []
+        deck_id = data.get('deck_id')
+        created_new = False
+        if not deck_id:
+            name = (data.get('name') or '').strip()
+            if not name:
+                return None, 'deck_id or name is required', 400
+            try:
+                status, scheduled_at = validate_status_payload(
+                    data.get('status') or 'published',
+                    data.get('scheduled_at'),
+                )
+            except ValueError as exc:
+                return None, str(exc), 400
+            created = DeckService.create_deck(
+                name,
+                collection_id,
+                image=data.get('image'),
+                cards=data.get('cards'),
+                status=status,
+                scheduled_at=scheduled_at,
+                init_progress=False,
+            )
+            deck_id = created.get('deck_id')
+            created_new = True
+
+        deck = DeckModel.get_by_id(deck_id)
+        if not deck:
+            return None, 'Deck not found', 404
+        if not created_new:
+            collection_decks = [
+                str(item) for item in (classroom.get('decks') or [])
+            ]
+            if str(deck_id) not in collection_decks:
+                return None, 'Deck does not belong to this classroom', 400
+
+        deck_card_ids = set(str(cid) for cid in (deck.get('cards') or []))
+        normalized_card_ids = [str(cid) for cid in card_ids]
+        if normalized_card_ids and not set(normalized_card_ids).issubset(deck_card_ids):
+            return None, 'card_ids must belong to the deck', 400
+
+        link = LessonDeckModel.link(lesson_id, deck_id, normalized_card_ids)
+        viewed = LessonViewModel.has_viewed(lesson_id, user_id)
+        serialized = CourseService._serialize_lesson_deck(
+            link, user_id, True, viewed
+        )
+        return serialized, None, 200
+
+    @staticmethod
+    def update_lesson_deck(lesson_id, deck_id, user_id, data):
+        from src.app.models.deck_model import DeckModel
+        from src.app.models.lesson_deck_model import LessonDeckModel
+
+        lesson, course, classroom, error = CourseService._lesson_classroom(lesson_id)
+        if error:
+            return None, error, 404
+        if CourseService._course_teacher_id(course) != str(user_id):
+            return None, 'Only the course teacher can update lesson decks', 403
+        deck = DeckModel.get_by_id(deck_id)
+        if not deck:
+            return None, 'Deck not found', 404
+        card_ids = [str(cid) for cid in (data.get('card_ids') or [])]
+        deck_card_ids = set(str(cid) for cid in (deck.get('cards') or []))
+        if card_ids and not set(card_ids).issubset(deck_card_ids):
+            return None, 'card_ids must belong to the deck', 400
+        link = LessonDeckModel.update_card_ids(lesson_id, deck_id, card_ids)
+        if not link:
+            return None, 'Link not found', 404
+        viewed = LessonViewModel.has_viewed(lesson_id, user_id)
+        return CourseService._serialize_lesson_deck(link, user_id, True, viewed), None, 200
+
+    @staticmethod
+    def unlink_lesson_deck(lesson_id, deck_id, user_id):
+        from src.app.models.lesson_deck_model import LessonDeckModel
+
+        lesson, course, _classroom, error = CourseService._lesson_classroom(lesson_id)
+        if error:
+            return None, error, 404
+        if CourseService._course_teacher_id(course) != str(user_id):
+            return None, 'Only the course teacher can unlink decks', 403
+        if not LessonDeckModel.unlink(lesson_id, deck_id):
+            return None, 'Link not found', 404
+        return {'message': 'Deck unlinked'}, None, 200
+
+    @staticmethod
+    def unlock_lesson_deck(lesson_id, deck_id, user_id):
+        from src.app.models.deck_model import DeckModel
+        from src.app.models.user_progress_model import UserProgressModel
+        from src.app.models.lesson_deck_model import (
+            LessonDeckModel,
+            StudentLessonDeckModel,
+            ContentVisibility,
+        )
+        from src.app.models.publish_status import is_released
+        from src.app.models.classroom_model import ClassroomModel
+
+        lesson, course, classroom, error = CourseService._lesson_classroom(lesson_id)
+        if error:
+            return None, error, 404
+        if CourseService._course_teacher_id(course) == str(user_id):
+            return None, 'Teachers cannot generate lesson decks', 403
+        if not classroom:
+            return None, 'Classroom not found', 404
+        if not ClassroomModel.is_student(course.get('classroom_id'), user_id):
+            return None, 'Only classroom students can unlock this deck', 403
+
+        link = LessonDeckModel.get_link(lesson_id, deck_id)
+        if not link:
+            return None, 'Deck is not linked to this lesson', 404
+        deck = DeckModel.get_by_id(deck_id)
+        if not deck or not is_released(deck.get('status'), deck.get('scheduled_at')):
+            return None, 'Deck is not available', 403
+        if not LessonViewModel.has_viewed(lesson_id, user_id):
+            return None, 'Watch the lesson before generating the deck', 403
+
+        StudentLessonDeckModel.unlock(user_id, lesson_id, deck_id)
+        filtered = ContentVisibility.filter_deck_for_user(
+            deck,
+            user_id,
+            collection=None,
+            is_teacher=False,
+        )
+        card_ids = (filtered or {}).get('cards') or []
+        for card_id in card_ids:
+            UserProgressModel.create_or_update(user_id, deck_id, card_id)
+        viewed = True
+        serialized = CourseService._serialize_lesson_deck(
+            link, user_id, False, viewed
+        )
+        return serialized, None, 200
+

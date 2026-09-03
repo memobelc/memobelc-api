@@ -4,6 +4,7 @@ import uuid
 
 from src.app import mongo
 from src.app.models.user_model import UserModel
+from bson import ObjectId
 
 
 def _auth_user(client, email, password="password123", name="User", teacher=False):
@@ -98,6 +99,7 @@ def _setup_course(client):
         "course_id": course_id,
         "module_id": module_id,
         "classroom_id": classroom_id,
+        "collection_id": collection_id,
     }
 
 
@@ -491,3 +493,254 @@ def test_teacher_cannot_rate_own_course(client):
         headers=ctx["teacher_headers"],
     )
     assert response.status_code == 403
+
+
+def _create_classroom_deck(client, ctx, name="Vocab", status="published", cards=None):
+    payload = {
+        "name": name,
+        "collection_id": ctx["collection_id"],
+        "status": status,
+    }
+    if cards is not None:
+        payload["cards"] = cards
+    created = client.post(
+        "/deck/create",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert created.status_code == 200
+    return created.get_json()["deck_id"]
+
+
+def test_lesson_deck_link_create_and_unlock(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+
+    created = client.post(
+        f"/course/lesson/{lesson_id}/decks",
+        data=json.dumps({
+            "name": "Lesson deck",
+            "status": "published",
+            "cards": [{"front": "hi", "back": "oi"}],
+        }),
+        headers=ctx["teacher_headers"],
+    )
+    assert created.status_code == 201
+    deck_id = created.get_json()["deck_id"]
+
+    student_collections = client.get(
+        "/collections/get_by_user",
+        headers=ctx["student_headers"],
+    )
+    assert student_collections.status_code == 200
+    decks = []
+    for collection in student_collections.get_json().get("collections") or []:
+        decks.extend(collection.get("decks") or [])
+    assert all(str(deck.get("_id")) != str(deck_id) for deck in decks)
+
+    blocked = client.post(
+        f"/course/lesson/{lesson_id}/decks/{deck_id}/unlock",
+        headers=ctx["student_headers"],
+    )
+    assert blocked.status_code == 403
+
+    viewed = client.post(
+        f"/course/lesson/{lesson_id}/viewed",
+        headers=ctx["student_headers"],
+    )
+    assert viewed.status_code == 200
+
+    unlocked = client.post(
+        f"/course/lesson/{lesson_id}/decks/{deck_id}/unlock",
+        headers=ctx["student_headers"],
+    )
+    assert unlocked.status_code == 200
+    assert unlocked.get_json().get("unlocked") is True
+
+    after = client.get(
+        "/collections/get_by_user",
+        headers=ctx["student_headers"],
+    )
+    visible_ids = []
+    for collection in after.get_json().get("collections") or []:
+        visible_ids.extend(str(deck.get("_id")) for deck in (collection.get("decks") or []))
+    assert str(deck_id) in visible_ids
+
+    progress = list(mongo.db.user_progress.find({
+        "user_id": ObjectId(ctx["student_id"]),
+        "deck_id": ObjectId(deck_id),
+    }))
+    assert len(progress) >= 1
+
+
+def test_unlinked_draft_hidden_and_published_visible(client):
+    ctx = _setup_course(client)
+    draft_id = _create_classroom_deck(client, ctx, name="Draft deck", status="draft")
+    live_id = _create_classroom_deck(client, ctx, name="Live deck", status="published")
+
+    student_collections = client.get(
+        "/collections/get_by_user",
+        headers=ctx["student_headers"],
+    )
+    visible_ids = []
+    for collection in student_collections.get_json().get("collections") or []:
+        visible_ids.extend(str(deck.get("_id")) for deck in (collection.get("decks") or []))
+    assert str(draft_id) not in visible_ids
+    assert str(live_id) in visible_ids
+
+    teacher_collections = client.get(
+        "/collections/get_by_user",
+        headers=ctx["teacher_headers"],
+    )
+    teacher_ids = []
+    for collection in teacher_collections.get_json().get("collections") or []:
+        teacher_ids.extend(str(deck.get("_id")) for deck in (collection.get("decks") or []))
+    assert str(draft_id) in teacher_ids
+
+
+def test_unlink_returns_deck_to_content(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+    deck_id = _create_classroom_deck(client, ctx, name="Shared", status="published")
+
+    linked = client.post(
+        f"/course/lesson/{lesson_id}/decks",
+        data=json.dumps({"deck_id": deck_id}),
+        headers=ctx["teacher_headers"],
+    )
+    assert linked.status_code == 201
+
+    hidden = client.get("/collections/get_by_user", headers=ctx["student_headers"])
+    hidden_ids = []
+    for collection in hidden.get_json().get("collections") or []:
+        hidden_ids.extend(str(deck.get("_id")) for deck in (collection.get("decks") or []))
+    assert str(deck_id) not in hidden_ids
+
+    unlinked = client.delete(
+        f"/course/lesson/{lesson_id}/decks/{deck_id}",
+        headers=ctx["teacher_headers"],
+    )
+    assert unlinked.status_code == 200
+
+    visible = client.get("/collections/get_by_user", headers=ctx["student_headers"])
+    visible_ids = []
+    for collection in visible.get_json().get("collections") or []:
+        visible_ids.extend(str(deck.get("_id")) for deck in (collection.get("decks") or []))
+    assert str(deck_id) in visible_ids
+
+
+def test_lesson_deck_card_subset_and_card_status(client):
+    ctx = _setup_course(client)
+    lesson_id = _create_lesson(client, ctx)
+    deck_id = _create_classroom_deck(
+        client,
+        ctx,
+        name="Subset",
+        status="published",
+        cards=[{"front": "a", "back": "1"}, {"front": "b", "back": "2"}],
+    )
+    cards = client.get(f"/card/get_cards_by_deck/{deck_id}").get_json()["cards"]
+    first_id = cards[0]["_id"]
+    second_id = cards[1]["_id"]
+
+    client.put(
+        f"/card/{second_id}",
+        data=json.dumps({
+            "front": "b",
+            "back": "2",
+            "status": "draft",
+        }),
+        content_type="application/json",
+    )
+
+    linked = client.post(
+        f"/course/lesson/{lesson_id}/decks",
+        data=json.dumps({"deck_id": deck_id, "card_ids": [first_id]}),
+        headers=ctx["teacher_headers"],
+    )
+    assert linked.status_code == 201
+    assert linked.get_json()["whole_deck"] is False
+
+    client.post(f"/course/lesson/{lesson_id}/viewed", headers=ctx["student_headers"])
+    client.post(
+        f"/course/lesson/{lesson_id}/decks/{deck_id}/unlock",
+        headers=ctx["student_headers"],
+    )
+    student_cards = client.get(
+        f"/card/get_cards_by_deck/{deck_id}",
+        query_string={"user_id": ctx["student_id"]},
+        headers=ctx["student_headers"],
+    ).get_json()["cards"]
+    student_card_ids = {card["_id"] for card in student_cards}
+    assert first_id in student_card_ids
+    assert second_id not in student_card_ids
+
+
+def test_enrollment_skips_progress_for_lesson_linked_deck(client):
+    suffix = uuid.uuid4().hex[:8]
+    teacher_headers, teacher_id = _auth_user(
+        client, f"teacher2_{suffix}@example.com", name="Teacher", teacher=True
+    )
+    student_headers, student_id = _auth_user(
+        client, f"student2_{suffix}@example.com", name="Student", teacher=False
+    )
+    coll = client.post(
+        "/collections/create",
+        data=json.dumps({"name": f"Coll {suffix}", "user_id": teacher_id}),
+        content_type="application/json",
+    )
+    collection_id = (coll.get_json() or {}).get("collection_id")
+    classroom = client.post(
+        "/classroom/create",
+        data=json.dumps({"collection_id": collection_id}),
+        headers=teacher_headers,
+    )
+    classroom_id = (classroom.get_json() or {}).get("class_id")
+    course = client.post(
+        "/course/create",
+        data=json.dumps({
+            "name": f"Course {suffix}",
+            "classroom_id": classroom_id,
+        }),
+        headers=teacher_headers,
+    )
+    course_id = (course.get_json() or {}).get("course_id")
+    module = client.post(
+        "/course/module/create",
+        data=json.dumps({"name": "Module 1", "course_id": course_id}),
+        headers=teacher_headers,
+    )
+    module_id = (module.get_json() or {}).get("module_id")
+    lesson = client.post(
+        "/course/lesson/create",
+        data=json.dumps({
+            "title": "Lesson",
+            "module_id": module_id,
+            "course_id": course_id,
+        }),
+        headers=teacher_headers,
+    )
+    lesson_id = lesson.get_json()["lesson_id"]
+    created = client.post(
+        f"/course/lesson/{lesson_id}/decks",
+        data=json.dumps({
+            "name": "Gated",
+            "cards": [{"front": "x", "back": "y"}],
+        }),
+        headers=teacher_headers,
+    )
+    deck_id = created.get_json()["deck_id"]
+    client.post(
+        "/classroom/add_user_in_classroom",
+        data=json.dumps({
+            "classroom_id": classroom_id,
+            "email_user": f"student2_{suffix}@example.com",
+        }),
+        headers=teacher_headers,
+    )
+    progress = list(mongo.db.user_progress.find({
+        "user_id": ObjectId(student_id),
+        "deck_id": ObjectId(deck_id),
+    }))
+    assert progress == []
+

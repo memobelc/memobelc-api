@@ -307,8 +307,10 @@ class LessonModel:
 
     @staticmethod
     def delete(lesson_id):
+        from src.app.models.lesson_deck_model import LessonDeckModel
         mongo.db.lesson_views.delete_many({'lesson_id': ObjectId(lesson_id)})
         CourseRatingModel.delete_by_target(CourseRatingModel.TARGET_LESSON, lesson_id)
+        LessonDeckModel.delete_by_lesson(lesson_id)
         mongo.db.lessons.delete_one({'_id': ObjectId(lesson_id)})
 
     @staticmethod

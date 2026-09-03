@@ -230,11 +230,25 @@ class ClassroomModel:
         ClassroomMembershipModel.mark_joined(
             classroom_id, user_id, classroom.get('collection')
         )
-        
-        
-        for item in classroom.get('decks'):
+
+        from src.app.models.lesson_deck_model import LessonDeckModel
+        from src.app.models.publish_status import is_released
+        from src.app.models.card_model import CardModel
+
+        for item in classroom.get('decks') or []:
             deck = DeckModel.get_by_id(item)
+            if not deck:
+                continue
+            if LessonDeckModel.is_deck_linked(deck.get('_id')):
+                continue
+            if not is_released(deck.get('status'), deck.get('scheduled_at')):
+                continue
             for card_id in deck.get("cards", []):
+                card = CardModel.get_by_id(card_id)
+                if not card:
+                    continue
+                if not is_released(getattr(card, 'status', None), getattr(card, 'scheduled_at', None)):
+                    continue
                 UserProgressModel.create_or_update(user_id, deck.get('_id'), card_id)
         
         
@@ -260,10 +274,18 @@ class ClassroomModel:
         collection_id = None
         if classroom:
             collection_id = classroom.get('collection')
+            from src.app.models.lesson_deck_model import ContentVisibility
+            from src.app.models.collection_model import CollectionModel
+            collection = CollectionModel.get_by_id(collection_id) if collection_id else None
             for deck_id in classroom.get('decks') or []:
                 deck = DeckModel.get_by_id(deck_id)
-                if deck:
-                    decks_snapshot.append(deck)
+                if not deck:
+                    continue
+                filtered = ContentVisibility.filter_deck_for_user(
+                    deck, user_id, collection, is_teacher=False
+                )
+                if filtered:
+                    decks_snapshot.append(filtered)
         ClassroomMembershipModel.freeze_on_leave(
             classroom_id, user_id, collection_id, decks_snapshot
         )

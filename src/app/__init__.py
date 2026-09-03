@@ -45,6 +45,11 @@ def create_app():
             CourseRatingModel.ensure_indexes()
         except Exception:
             pass
+        try:
+            from .models.lesson_deck_model import LessonDeckModel
+            LessonDeckModel.ensure_indexes()
+        except Exception:
+            pass
 
     SWAGGER_URL = "/doc"
     # Usar rota da própria app para o spec (mesma origem, evita CORS no fetch do spec)

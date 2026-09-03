@@ -99,6 +99,7 @@ class CollectionModel:
         """Enriquece um dict de collection com decks, total_cards, pending_cards e review_collections_cards."""
         from .deck_model import DeckModel
         from .classroom_membership_model import ClassroomMembershipModel
+        from .lesson_deck_model import ContentVisibility
 
         freeze = None
         if collection.get("classroom") and user_id:
@@ -106,6 +107,7 @@ class CollectionModel:
                 user_id, collection.get("_id")
             )
 
+        is_teacher = ContentVisibility.is_classroom_teacher(collection, user_id)
         total_cards_in_collection = 0
         pending_cards_in_collection = 0
         list_deck_in_collection = []
@@ -122,14 +124,19 @@ class CollectionModel:
                 deck["cards"] = [
                     card_id for card_id in deck.get("cards", []) if str(card_id) in allowed_cards
                 ]
+            else:
+                deck = ContentVisibility.filter_deck_for_user(
+                    deck, user_id, collection, is_teacher=is_teacher
+                )
+                if not deck:
+                    continue
             cards_count = len(deck.get("cards", []))
             total_cards_in_collection += cards_count
-            allowed_ids = set(str(card_id) for card_id in deck.get("cards", [])) if freeze else None
+            allowed_ids = set(str(card_id) for card_id in deck.get("cards", []))
             review_cards = UserProgressModel.get_pending_cards(user_id, deck_id) if user_id else []
-            if allowed_ids is not None:
-                review_cards = [
-                    card for card in review_cards if str(card.get("card_id")) in allowed_ids
-                ]
+            review_cards = [
+                card for card in review_cards if str(card.get("card_id")) in allowed_ids
+            ]
             pending_count = len(review_cards)
             pending_cards_in_collection += pending_count
             for card in review_cards:

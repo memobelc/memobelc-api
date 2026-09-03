@@ -61,6 +61,8 @@ class CardService:
             "options": options if card_type == "multiple_choice" else None,
             "correct_index": correct_index if card_type == "multiple_choice" else None,
             "image": image if card_type == "image" else None,
+            "status": data.get("status"),
+            "scheduled_at": data.get("scheduled_at"),
         }
 
     @staticmethod
@@ -75,8 +77,16 @@ class CardService:
         options=None,
         correct_index=None,
         image=None,
+        status=None,
+        scheduled_at=None,
     ):
         """Cria um novo card e o salva no banco de dados."""
+        from src.app.models.publish_status import DEFAULT_STATUS, validate_status_payload
+
+        if status or scheduled_at:
+            status, scheduled_at = validate_status_payload(
+                status or DEFAULT_STATUS, scheduled_at
+            )
         card = CardModel(
             front=front,
             back=back,
@@ -88,6 +98,8 @@ class CardService:
             options=options,
             correct_index=correct_index,
             image=image,
+            status=status,
+            scheduled_at=scheduled_at,
         )
         card.save_to_db()
         card_dict = card.to_dict()
@@ -115,10 +127,10 @@ class CardService:
         return "ok"
     
     @staticmethod
-    def get_cards_by_deck(deck_id):
+    def get_cards_by_deck(deck_id, user_id=None):
         """This method is responsible for get all cards in deck"""
         
-        return CardModel.get_cards_by_deck(deck_id)
+        return CardModel.get_cards_by_deck(deck_id, user_id=user_id)
 
     @staticmethod
     def get_all_cards():
@@ -155,9 +167,29 @@ class CardService:
         card.options = normalized["options"]
         card.correct_index = normalized["correct_index"]
         card.image = normalized["image"]
+        if "status" in data or "scheduled_at" in data:
+            from src.app.models.publish_status import validate_status_payload
+            status, scheduled_at = validate_status_payload(
+                data.get("status", card.status),
+                data.get("scheduled_at") if "scheduled_at" in data else card.scheduled_at,
+            )
+            card.status = status
+            card.scheduled_at = scheduled_at
         card.updated_at = datetime.now(timezone.utc)
 
         card.save_to_db()
+        deck_id = getattr(card, 'deck', None)
+        if not deck_id:
+            deck_doc = mongo.db.decks.find_one({"cards": ObjectId(card._id)})
+            if deck_doc:
+                deck_id = str(deck_doc["_id"])
+        if deck_id:
+            from src.app.models.lesson_deck_model import ContentVisibility
+            from src.app.models.user_progress_model import UserProgressModel
+            users = CardModel.get_user_by_deck(deck_id)
+            for user_id in users:
+                if ContentVisibility.student_should_get_progress(user_id, deck_id, card._id):
+                    UserProgressModel.create_or_update(user_id, deck_id, card._id)
         return card.to_dict()
 
     @staticmethod

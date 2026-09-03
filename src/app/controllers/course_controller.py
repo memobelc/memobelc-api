@@ -517,6 +517,65 @@ class CourseController:
             return jsonify({'error': 'Course not found'}), 404
         return jsonify(result), 200
 
+    # ── Lesson decks ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    @token_required
+    def get_lesson_decks(current_user, token, lesson_id):
+        _lesson, course, _classroom, error = CourseService._lesson_classroom(lesson_id)
+        if error:
+            return jsonify({'error': error}), 404
+        is_teacher = (
+            CourseService._course_teacher_id(course) == str(current_user._id)
+            or current_user.has_role('admin')
+        )
+        result = CourseService.list_lesson_decks(
+            lesson_id, user_id=str(current_user._id), is_teacher=is_teacher
+        )
+        return jsonify({'decks': result}), 200
+
+    @staticmethod
+    @token_required
+    def link_lesson_deck(current_user, token, lesson_id):
+        data = request.get_json() or {}
+        result, error, status = CourseService.link_lesson_deck(
+            lesson_id, str(current_user._id), data
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), 201
+
+    @staticmethod
+    @token_required
+    def update_lesson_deck(current_user, token, lesson_id, deck_id):
+        data = request.get_json() or {}
+        result, error, status = CourseService.update_lesson_deck(
+            lesson_id, deck_id, str(current_user._id), data
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def unlink_lesson_deck(current_user, token, lesson_id, deck_id):
+        result, error, status = CourseService.unlink_lesson_deck(
+            lesson_id, deck_id, str(current_user._id)
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def unlock_lesson_deck(current_user, token, lesson_id, deck_id):
+        result, error, status = CourseService.unlock_lesson_deck(
+            lesson_id, deck_id, str(current_user._id)
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), 200
+
 
 course_blueprint = Blueprint('course_blueprint', __name__)
 
@@ -567,6 +626,11 @@ course_blueprint.route('/activity/<activity_id>/my_answer', methods=['GET'])(Cou
 
 # Lesson Views & Student Progress
 course_blueprint.route('/lesson/<lesson_id>/viewed', methods=['POST'])(CourseController.mark_lesson_viewed)
+course_blueprint.route('/lesson/<lesson_id>/decks', methods=['GET'])(CourseController.get_lesson_decks)
+course_blueprint.route('/lesson/<lesson_id>/decks', methods=['POST'])(CourseController.link_lesson_deck)
+course_blueprint.route('/lesson/<lesson_id>/decks/<deck_id>/unlock', methods=['POST'])(CourseController.unlock_lesson_deck)
+course_blueprint.route('/lesson/<lesson_id>/decks/<deck_id>', methods=['PUT'])(CourseController.update_lesson_deck)
+course_blueprint.route('/lesson/<lesson_id>/decks/<deck_id>', methods=['DELETE'])(CourseController.unlink_lesson_deck)
 course_blueprint.route('/<course_id>/students_progress', methods=['GET'])(CourseController.get_students_progress)
 course_blueprint.route('/<course_id>/ranking', methods=['GET'])(CourseController.get_course_ranking)
 
