@@ -145,6 +145,40 @@ class AffiliateProductModel:
         )
 
     @staticmethod
+    def related_sale_keys(product_type, product_id):
+        keys = []
+        if product_type and product_id:
+            keys.append((str(product_type), str(product_id)))
+        if not product_id:
+            return keys
+        try:
+            from src.app.models.course_model import CourseModel
+            if product_type == "classroom":
+                for course in CourseModel.get_by_classroom(product_id) or []:
+                    course_id = course.get("_id")
+                    if course_id:
+                        keys.append(("course", str(course_id)))
+            if product_type == "course":
+                course = CourseModel.get_by_id(product_id)
+                classroom_id = (course or {}).get("classroom_id")
+                if classroom_id:
+                    keys.append(("classroom", str(classroom_id)))
+        except Exception:
+            pass
+        return keys
+
+    @staticmethod
+    def find_platform_products_for_sale(product_type, product_id):
+        found = []
+        seen = set()
+        for ptype, pid in AffiliateProductModel.related_sale_keys(product_type, product_id):
+            item = AffiliateProductModel.find_platform_product(ptype, pid)
+            if item and item.get("_id") not in seen:
+                seen.add(item["_id"])
+                found.append(item)
+        return found
+
+    @staticmethod
     def list_products(active_only=False):
         query = {}
         if active_only:

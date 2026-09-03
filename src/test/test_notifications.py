@@ -57,6 +57,8 @@ def test_notification_settings_defaults(client, auth_headers):
     assert "services" in data
     assert data["services"]["daily_study"]["enabled"] is True
     assert data["services"]["daily_study"]["email"] is False
+    assert data["services"]["affiliate_sales"]["enabled"] is True
+    assert data["services"]["affiliate_sales"]["email"] is True
 
 
 def test_notification_settings_update_email(client, auth_headers):

@@ -13,22 +13,31 @@ SERVICE_KEYS = (
     "admin_custom",
     "support",
     "affiliate",
+    "affiliate_sales",
 )
 
 DEFAULT_PREF = {"enabled": True, "email": False}
+SERVICE_DEFAULTS = {
+    "affiliate_sales": {"enabled": True, "email": True},
+}
 
 
 class UserSettingsModel:
     @staticmethod
-    def default_services():
-        return {key: dict(DEFAULT_PREF) for key in SERVICE_KEYS}
+    def default_pref(key=None):
+        return dict(SERVICE_DEFAULTS.get(key, DEFAULT_PREF))
 
     @staticmethod
-    def _normalize_pref(pref):
+    def default_services():
+        return {key: UserSettingsModel.default_pref(key) for key in SERVICE_KEYS}
+
+    @staticmethod
+    def _normalize_pref(pref, key=None):
+        base = UserSettingsModel.default_pref(key)
         if not isinstance(pref, dict):
-            return dict(DEFAULT_PREF)
-        enabled = bool(pref.get("enabled", True))
-        email = bool(pref.get("email", False)) and enabled
+            return base
+        enabled = bool(pref.get("enabled", base["enabled"]))
+        email = bool(pref.get("email", base["email"])) and enabled
         return {"enabled": enabled, "email": email}
 
     @staticmethod
@@ -37,7 +46,7 @@ class UserSettingsModel:
         services = UserSettingsModel.default_services()
         for key, pref in stored.items():
             if key in services:
-                services[key] = UserSettingsModel._normalize_pref(pref)
+                services[key] = UserSettingsModel._normalize_pref(pref, key)
         updated_at = (doc or {}).get("updated_at")
         return {
             "user_id": str(user_id),
@@ -65,7 +74,8 @@ class UserSettingsModel:
         merged = current["services"]
         for key, pref in incoming.items():
             merged[key] = UserSettingsModel._normalize_pref(
-                {**merged.get(key, DEFAULT_PREF), **(pref if isinstance(pref, dict) else {})}
+                {**merged.get(key, UserSettingsModel.default_pref(key)), **(pref if isinstance(pref, dict) else {})},
+                key,
             )
 
         now = datetime.now(timezone.utc)

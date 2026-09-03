@@ -321,6 +321,30 @@ class BillingService:
         affiliate_meta = AffiliateService.attribution_metadata(
             data, coupon, product_type, product_id
         )
+        # #region agent log
+        try:
+            import json
+            import time
+            with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "75e675",
+                    "hypothesisId": "E",
+                    "location": "billing_service.py:checkout",
+                    "message": "checkout attribution",
+                    "data": {
+                        "product_type": product_type,
+                        "product_id": str(product_id) if product_id else None,
+                        "has_affiliate_code": bool(data.get("affiliate_code") or data.get("ref")),
+                        "has_coupon": bool(coupon),
+                        "affiliate_meta_keys": list((affiliate_meta or {}).keys()),
+                        "has_affiliate_id": bool((affiliate_meta or {}).get("affiliate_id")),
+                        "billing_type": billing_type,
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }, default=str) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         if product_type == "plan":
             blocking = BillingService._blocking_subscription(user._id)
@@ -435,6 +459,27 @@ class BillingService:
                 payload["discount"] = discount
             asaas_pay = Asaas.create_payment(payload)
             paid = _asaas_is_paid(asaas_pay.get("status"))
+            # #region agent log
+            try:
+                import json
+                import time
+                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "75e675",
+                        "hypothesisId": "F",
+                        "location": "billing_service.py:checkout",
+                        "message": "one-time payment created",
+                        "data": {
+                            "paid": bool(paid),
+                            "asaas_status": asaas_pay.get("status"),
+                            "billing_type": billing_type,
+                            "will_fulfill": bool(paid),
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }, default=str) + "\n")
+            except Exception:
+                pass
+            # #endregion
             payment = PaymentModel.create({
                 "user_id": user._id,
                 "type": product_type,
@@ -553,6 +598,26 @@ class BillingService:
                 updates["refunded_at"] = utcnow()
             payment = PaymentModel.update(payment["_id"], updates)
 
+        # #region agent log
+        try:
+            import json
+            import time
+            with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "75e675",
+                    "hypothesisId": "H",
+                    "location": "billing_service.py:_on_asaas_payment",
+                    "message": "webhook payment",
+                    "data": {
+                        "status": status,
+                        "has_payment": bool(payment),
+                        "has_subscription": bool(subscription),
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }, default=str) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if subscription:
             BillingService._apply_subscription_payment(subscription, status, payment_payload, payment)
         elif payment and status == "confirmed":
@@ -626,23 +691,51 @@ class BillingService:
         user_id = payment.get("user_id")
         product_type = payment.get("product_type")
         product_id = payment.get("product_id")
+        # #region agent log
+        try:
+            import json
+            import time
+            with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "75e675",
+                    "hypothesisId": "G",
+                    "location": "billing_service.py:_fulfill_one_time",
+                    "message": "fulfill called",
+                    "data": {
+                        "has_user_id": bool(user_id),
+                        "has_product_id": bool(product_id),
+                        "product_type": product_type,
+                        "payment_status": (payment or {}).get("status"),
+                        "has_affiliate_id": bool(((payment or {}).get("metadata") or {}).get("affiliate_id")),
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }, default=str) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if not user_id or not product_id:
             return
-        if product_type == "book":
-            EntitlementService.grant_book(user_id, product_id, source="purchase", source_id=payment["_id"])
-        elif product_type == "bundle":
-            EntitlementService.grant_bundle(user_id, product_id, source="purchase", source_id=payment["_id"])
-        elif product_type == "course":
-            EntitlementService.grant_course(user_id, product_id, source="purchase", source_id=payment["_id"])
-            BillingService._enroll_course_buyer(user_id, product_id)
-            BillingService._confirm_buyer_email(user_id)
-            BillingService._send_purchase_receipt(payment)
-        elif product_type == "classroom":
-            EntitlementService.grant_classroom(user_id, product_id, source="purchase", source_id=payment["_id"])
-            BillingService._enroll_classroom_buyer(user_id, product_id)
-            BillingService._confirm_buyer_email(user_id)
-            BillingService._send_purchase_receipt(payment)
-        AffiliateService.accrue_from_payment(payment)
+        try:
+            AffiliateService.accrue_from_payment(payment)
+        except Exception as exc:
+            current_app.logger.error(f"Failed to accrue affiliate commission: {exc}")
+        try:
+            if product_type == "book":
+                EntitlementService.grant_book(user_id, product_id, source="purchase", source_id=payment["_id"])
+            elif product_type == "bundle":
+                EntitlementService.grant_bundle(user_id, product_id, source="purchase", source_id=payment["_id"])
+            elif product_type == "course":
+                EntitlementService.grant_course(user_id, product_id, source="purchase", source_id=payment["_id"])
+                BillingService._enroll_course_buyer(user_id, product_id)
+                BillingService._confirm_buyer_email(user_id)
+            elif product_type == "classroom":
+                EntitlementService.grant_classroom(user_id, product_id, source="purchase", source_id=payment["_id"])
+                BillingService._enroll_classroom_buyer(user_id, product_id)
+                BillingService._confirm_buyer_email(user_id)
+            if product_type in ("course", "classroom"):
+                BillingService._send_purchase_receipt(payment)
+        except Exception as exc:
+            current_app.logger.error(f"Failed to finish one-time fulfillment: {exc}")
 
     @staticmethod
     def _enroll_course_buyer(user_id, course_id):
@@ -914,6 +1007,22 @@ Equipe Memobelc
 
     @staticmethod
     def sync_payment(user, payment_id):
+        # #region agent log
+        try:
+            import json
+            import time
+            with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "75e675",
+                    "hypothesisId": "I",
+                    "location": "billing_service.py:sync_payment",
+                    "message": "sync_payment called",
+                    "data": {"has_payment_id": bool(payment_id)},
+                    "timestamp": int(time.time() * 1000),
+                }, default=str) + "\n")
+        except Exception:
+            pass
+        # #endregion
         payment = PaymentModel.get_by_id(payment_id)
         if not payment or str(payment.get("user_id")) != str(user._id):
             return {"error": "Payment not found"}, 404

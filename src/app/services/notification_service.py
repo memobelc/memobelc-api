@@ -26,6 +26,7 @@ class NotificationService:
     TYPE_ADMIN_CUSTOM = "admin_custom"
     TYPE_SUPPORT = "support"
     TYPE_AFFILIATE = "affiliate"
+    TYPE_AFFILIATE_SALE = "affiliate_sales"
 
     # ---------- Preferências ----------
     @staticmethod
@@ -86,6 +87,22 @@ Equipe Memobelc
         extra_data: Optional[Dict[str, Any]] = None,
     ):
         if not NotificationService._should_notify(user_id, notification_type):
+            # #region agent log
+            try:
+                import json
+                import time
+                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "75e675",
+                        "hypothesisId": "D",
+                        "location": "notification_service.py:_create_and_push",
+                        "message": "notify skipped by settings",
+                        "data": {"notification_type": notification_type, "has_user_id": bool(user_id)},
+                        "timestamp": int(time.time() * 1000),
+                    }, default=str) + "\n")
+            except Exception:
+                pass
+            # #endregion
             return
 
         data = {"title": title, "body": body}
@@ -93,10 +110,39 @@ Equipe Memobelc
             data.update(extra_data)
 
         NotificationModel.create(user_id=user_id, notification_type=notification_type, data=data)
+        # #region agent log
+        if notification_type in ("affiliate_sales", "affiliate"):
+            try:
+                import json
+                import time
+                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "75e675",
+                        "hypothesisId": "D",
+                        "location": "notification_service.py:_create_and_push",
+                        "message": "notification created",
+                        "data": {
+                            "notification_type": notification_type,
+                            "has_user_id": bool(user_id),
+                            "email": NotificationService._should_email(user_id, notification_type),
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }, default=str) + "\n")
+            except Exception:
+                pass
+        # #endregion
         PushNotificationService.send_to_user(user_id=user_id, title=title, body=body, data=extra_data or {})
 
         if NotificationService._should_email(user_id, notification_type):
-            NotificationService._send_notification_email(user_id, title, body)
+            app = current_app._get_current_object()
+            def _send_email_async():
+                with app.app_context():
+                    NotificationService._send_notification_email(user_id, title, body)
+            try:
+                import threading
+                threading.Thread(target=_send_email_async, daemon=True).start()
+            except Exception as exc:
+                current_app.logger.error(f"Failed to start notification email thread: {exc}")
 
     # ---------- API para controllers ----------
     @staticmethod
@@ -315,5 +361,18 @@ Equipe Memobelc
                 body=body,
                 extra_data=payload,
             )
+
+    @staticmethod
+    def notify_affiliate_sale(user_id: str, title: str, body: str, extra_data: Optional[Dict[str, Any]] = None):
+        """Notifica o afiliado sobre uma venda (app + e-mail conforme preferências)."""
+        if not user_id:
+            return
+        NotificationService._create_and_push(
+            user_id=str(user_id),
+            notification_type=NotificationService.TYPE_AFFILIATE_SALE,
+            title=title,
+            body=body,
+            extra_data=extra_data or {},
+        )
 
 

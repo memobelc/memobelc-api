@@ -23,6 +23,25 @@ def _digits(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+# #region agent log
+def _dbg(hypothesis_id, location, message, data=None):
+    try:
+        import json
+        import time
+        with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "sessionId": "75e675",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data or {},
+                "timestamp": int(time.time() * 1000),
+            }, default=str) + "\n")
+    except Exception:
+        pass
+# #endregion
+
+
 def _share_url(product, referral_code):
     base = (product.get("checkout_url") or "").strip()
     if not base:
@@ -231,40 +250,112 @@ class AffiliateService:
         if not affiliate and affiliate_code:
             affiliate = AffiliateModel.find_by_code(affiliate_code)
         if not affiliate or affiliate.get("status") != "active":
+            # #region agent log
+            _dbg("A", "affiliate_service.py:resolve_attribution", "attribution failed: affiliate", {
+                "has_code": bool(affiliate_code),
+                "has_coupon_affiliate": bool(coupon and coupon.get("affiliate_id")),
+                "has_affiliate": bool(affiliate),
+                "affiliate_status": (affiliate or {}).get("status"),
+                "product_type": product_type,
+                "product_id": str(product_id) if product_id else None,
+            })
+            # #endregion
             return None
         if not affiliate_product:
-            affiliate_product = AffiliateProductModel.find_platform_product(product_type, product_id)
+            related = AffiliateProductModel.find_platform_products_for_sale(product_type, product_id)
+            approved_related = [
+                item for item in related
+                if AffiliateApplicationModel.is_approved(affiliate["_id"], item["_id"])
+            ]
+            affiliate_product = (approved_related or related or [None])[0]
         if not affiliate_product:
+            sale_keys = set(AffiliateProductModel.related_sale_keys(product_type, product_id))
+            fallback_products = []
+            for application in AffiliateApplicationModel.list_for_affiliate(affiliate["_id"]):
+                if application.get("status") != "approved":
+                    continue
+                candidate = AffiliateProductModel.get_by_id(application.get("product_id"))
+                if not candidate or not candidate.get("is_active") or not candidate.get("affiliate_enabled"):
+                    continue
+                if candidate.get("source") == "platform":
+                    key = (str(candidate.get("product_type") or ""), str(candidate.get("product_id") or ""))
+                    if key in sale_keys:
+                        affiliate_product = candidate
+                        break
+                    continue
+                fallback_products.append(candidate)
+            if not affiliate_product and len(fallback_products) == 1:
+                affiliate_product = fallback_products[0]
+        if not affiliate_product:
+            # #region agent log
+            _dbg("A", "affiliate_service.py:resolve_attribution", "attribution failed: product", {
+                "affiliate_id": str(affiliate.get("_id")),
+                "product_type": product_type,
+                "product_id": str(product_id) if product_id else None,
+                "related_keys": AffiliateProductModel.related_sale_keys(product_type, product_id),
+            })
+            # #endregion
             return None
         if not AffiliateApplicationModel.is_approved(affiliate["_id"], affiliate_product["_id"]):
+            # #region agent log
+            _dbg("A", "affiliate_service.py:resolve_attribution", "attribution failed: application not approved", {
+                "affiliate_id": str(affiliate.get("_id")),
+                "affiliate_product_id": str(affiliate_product.get("_id")),
+            })
+            # #endregion
             return None
-        return {
+        result = {
             "affiliate_id": affiliate["_id"],
             "affiliate_code": affiliate.get("referral_code"),
             "affiliate_product_id": affiliate_product["_id"],
         }
+        # #region agent log
+        _dbg("A", "affiliate_service.py:resolve_attribution", "attribution ok", {
+            "affiliate_id": str(result["affiliate_id"]),
+            "affiliate_product_id": str(result["affiliate_product_id"]),
+        })
+        # #endregion
+        return result
 
     @staticmethod
     def attribution_metadata(data, coupon, product_type, product_id):
+        affiliate_code = data.get("affiliate_code") or data.get("ref")
         attribution = AffiliateService.resolve_attribution(
-            affiliate_code=data.get("affiliate_code") or data.get("ref"),
+            affiliate_code=affiliate_code,
             coupon=coupon,
             product_type=product_type,
             product_id=product_id,
         )
-        if not attribution:
-            return {}
-        return attribution
+        if attribution:
+            return attribution
+        if affiliate_code:
+            return {"affiliate_code": affiliate_code}
+        return {}
 
     @staticmethod
     def accrue_from_payment(payment, subscription=None):
         if not payment:
+            # #region agent log
+            _dbg("E", "affiliate_service.py:accrue_from_payment", "no payment", {})
+            # #endregion
             return None
         metadata = dict(payment.get("metadata") or {})
         if subscription:
             metadata.update(subscription.get("metadata") or {})
         affiliate_id = metadata.get("affiliate_id")
         product_id = metadata.get("affiliate_product_id")
+        # #region agent log
+        _dbg("E", "affiliate_service.py:accrue_from_payment", "accrue start", {
+            "payment_id": str(payment.get("_id")) if payment.get("_id") else None,
+            "payment_status": payment.get("status"),
+            "product_type": payment.get("product_type"),
+            "product_id": str(payment.get("product_id")) if payment.get("product_id") else None,
+            "has_affiliate_id": bool(affiliate_id),
+            "has_affiliate_product_id": bool(product_id),
+            "has_affiliate_code": bool(metadata.get("affiliate_code")),
+            "meta_keys": list(metadata.keys()),
+        })
+        # #endregion
         if not affiliate_id:
             attribution = AffiliateService.resolve_attribution(
                 affiliate_code=metadata.get("affiliate_code"),
@@ -273,6 +364,11 @@ class AffiliateService:
                 product_id=payment.get("product_id"),
             )
             if not attribution:
+                # #region agent log
+                _dbg("A", "affiliate_service.py:accrue_from_payment", "accrue aborted: no attribution", {
+                    "payment_id": str(payment.get("_id")) if payment.get("_id") else None,
+                })
+                # #endregion
                 return None
             affiliate_id = attribution["affiliate_id"]
             product_id = attribution["affiliate_product_id"]
@@ -335,21 +431,60 @@ class AffiliateService:
         buyer_user_id=None,
         notes="",
     ):
+        # #region agent log
+        _dbg("B", "affiliate_service.py:_create_commission", "create start", {
+            "has_payment_id": bool(payment_id),
+            "affiliate_id": str(affiliate_id) if affiliate_id else None,
+            "product_id": str(product_id) if product_id else None,
+        })
+        # #endregion
         if payment_id:
             existing = AffiliateCommissionModel.find_by_payment(payment_id)
             if existing:
+                # #region agent log
+                _dbg("B", "affiliate_service.py:_create_commission", "existing commission by payment", {
+                    "commission_id": str(existing.get("_id")),
+                    "status": existing.get("status"),
+                })
+                # #endregion
                 return existing
         if external_sale_id:
             existing = AffiliateCommissionModel.find_by_external_sale(external_sale_id)
             if existing:
+                # #region agent log
+                _dbg("B", "affiliate_service.py:_create_commission", "existing commission by external sale", {
+                    "commission_id": str(existing.get("_id")),
+                    "status": existing.get("status"),
+                })
+                # #endregion
                 return existing
         affiliate = AffiliateModel.get_by_id(affiliate_id)
         product = AffiliateProductModel.get_by_id(product_id)
         if not affiliate or not product:
+            # #region agent log
+            _dbg("B", "affiliate_service.py:_create_commission", "missing affiliate or product", {
+                "has_affiliate": bool(affiliate),
+                "has_product": bool(product),
+                "affiliate_id": str(affiliate_id) if affiliate_id else None,
+                "product_id": str(product_id) if product_id else None,
+            })
+            # #endregion
             return None
         if affiliate.get("status") != "active":
+            # #region agent log
+            _dbg("B", "affiliate_service.py:_create_commission", "affiliate not active", {
+                "affiliate_id": str(affiliate_id),
+                "status": affiliate.get("status"),
+            })
+            # #endregion
             return None
         if not AffiliateApplicationModel.is_approved(affiliate_id, product_id):
+            # #region agent log
+            _dbg("B", "affiliate_service.py:_create_commission", "application not approved", {
+                "affiliate_id": str(affiliate_id),
+                "product_id": str(product_id),
+            })
+            # #endregion
             return None
         sale_count = AffiliateCommissionModel.count_credited(affiliate_id, product_id) + 1
         tier = AffiliateProductModel.match_tier(product, sale_count)
@@ -373,6 +508,14 @@ class AffiliateService:
             if payment_id:
                 return AffiliateCommissionModel.find_by_payment(payment_id)
             return AffiliateCommissionModel.find_by_external_sale(external_sale_id)
+        # #region agent log
+        _dbg("B", "affiliate_service.py:_create_commission", "commission created", {
+            "commission_id": str(commission.get("_id")),
+            "status": commission.get("status"),
+            "amount": commission.get("amount"),
+            "affiliate_user_id": str(affiliate.get("user_id")) if affiliate.get("user_id") else None,
+        })
+        # #endregion
         AffiliateService._notify_sale(affiliate, product, commission)
         return commission
 
@@ -505,6 +648,7 @@ class AffiliateService:
             f"{name} tem saldo pendente de comissão: R$ {commission.get('amount'):.2f} "
             f"({product.get('name')})."
         )
+        AffiliateService._notify_affiliate_sale(affiliate, product, commission)
         AffiliateService._alert_admins(
             title="Venda de afiliado",
             body=sale_body,
@@ -528,6 +672,60 @@ class AffiliateService:
             support_user_id=affiliate.get("user_id"),
             support_body=pending_body,
         )
+
+    @staticmethod
+    def _notify_affiliate_sale(affiliate, product, commission):
+        user_id = affiliate.get("user_id")
+        if not user_id:
+            # #region agent log
+            _dbg("C", "affiliate_service.py:_notify_affiliate_sale", "no affiliate user_id", {
+                "affiliate_id": str(affiliate.get("_id")) if affiliate.get("_id") else None,
+            })
+            # #endregion
+            return
+        amount = float(commission.get("amount") or 0)
+        percent = commission.get("percent")
+        product_name = product.get("name") or "produto"
+        title = "Você fez uma venda!"
+        body = (
+            f"Sua venda de {product_name} gerou R$ {amount:.2f} de comissão ({percent}%). "
+            "O valor foi creditado como saldo em análise."
+        )
+        try:
+            from src.app.services.notification_service import NotificationService
+
+            # #region agent log
+            _dbg("C", "affiliate_service.py:_notify_affiliate_sale", "notify_affiliate_sale start", {
+                "user_id": str(user_id),
+                "amount": amount,
+            })
+            # #endregion
+            NotificationService.notify_affiliate_sale(
+                user_id=str(user_id),
+                title=title,
+                body=body,
+                extra_data={
+                    "kind": "sale",
+                    "commission_id": commission.get("_id"),
+                    "product_id": product.get("_id"),
+                    "amount": amount,
+                    "percent": percent,
+                    "sale_amount": commission.get("sale_amount"),
+                },
+            )
+            # #region agent log
+            _dbg("C", "affiliate_service.py:_notify_affiliate_sale", "notify_affiliate_sale called", {
+                "user_id": str(user_id),
+                "amount": amount,
+            })
+            # #endregion
+        except Exception as exc:
+            # #region agent log
+            _dbg("C", "affiliate_service.py:_notify_affiliate_sale", "notify exception", {
+                "error": type(exc).__name__,
+            })
+            # #endregion
+            pass
 
     @staticmethod
     def _notify_withdrawal(user, affiliate, withdrawal):
