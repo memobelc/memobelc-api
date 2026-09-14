@@ -20,7 +20,7 @@ def _parse_price(value):
 
 
 class ClassroomModel:
-    def __init__(self, _id=None, teacher=None,  created_at=None, updated_at=None, students=None, guests=None, name=None, collection=None, collection_data=None, students_data=None, checkout_allowed=False, checkout_enabled=False, price=None, **kwargs):
+    def __init__(self, _id=None, teacher=None,  created_at=None, updated_at=None, students=None, guests=None, name=None, collection=None, collection_data=None, students_data=None, checkout_allowed=False, checkout_enabled=False, price=None, image=None, **kwargs):
         self._id = str(_id) if _id else None
         self.name = name
         self.teacher = teacher
@@ -32,6 +32,7 @@ class ClassroomModel:
         self.checkout_allowed = bool(checkout_allowed)
         self.checkout_enabled = bool(checkout_enabled)
         self.price = _parse_price(price)
+        self.image = image
         self.created_at = created_at or datetime.now(timezone.utc)
         self.updated_at = updated_at or datetime.now(timezone.utc)
 
@@ -296,6 +297,7 @@ class ClassroomModel:
         
     def to_dict(self):
         """Converte um documento classroom para dicionário"""
+        collection_image = (self.collection_data or {}).get('image')
         return {
             '_id': self._id,
             'name': self.name,
@@ -305,7 +307,9 @@ class ClassroomModel:
             'students': [{'_id': str(student['_id']), 'name': student.get('name', ''), 'email': student.get('email', '')} for student in (self.students_data or [])],
             'guests': [guest for guest in self.guests],
             'collection': str(self.collection),
-            'image': (self.collection_data or {}).get('image'),
+            'image': self.image or collection_image,
+            'cover_image': self.image,
+            'collection_image': collection_image,
             'decks': [str(item) for item in (self.collection_data or {}).get('decks') or []],
             'checkout_allowed': bool(self.checkout_allowed),
             'checkout_enabled': bool(self.checkout_enabled),

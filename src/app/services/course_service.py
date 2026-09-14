@@ -193,16 +193,39 @@ class CourseService:
         ModuleModel.reorder(course_id, module_ids)
         return {}
 
+    @staticmethod
+    def reorder_courses(classroom_id, course_ids):
+        CourseModel.reorder(classroom_id, course_ids)
+        return {}
+
     # ── Lessons ───────────────────────────────────────────────────────────────
 
     @staticmethod
     def create_lesson(title, video_url, video_type, description,
-                      module_id, course_id, visible, scheduled_at):
+                      module_id, course_id, visible, scheduled_at,
+                      content_html='', lesson_format='text'):
+        from src.app.utils.html_sanitize import sanitize_lesson_html
+
+        if lesson_format not in LessonModel.LESSON_FORMATS:
+            lesson_format = 'text'
+
+        try:
+            safe_html = sanitize_lesson_html(content_html)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if lesson_format == 'text':
+            video_url = ''
+        elif lesson_format == 'video':
+            safe_html = ''
+
         lesson = LessonModel(
             title=title,
             video_url=video_url,
             video_type=video_type,
             description=description,
+            content_html=safe_html,
+            lesson_format=lesson_format,
             module_id=module_id,
             course_id=course_id,
             visible=visible,
@@ -212,6 +235,25 @@ class CourseService:
 
     @staticmethod
     def update_lesson(lesson_id, update_data):
+        from src.app.utils.html_sanitize import sanitize_lesson_html
+
+        if 'content_html' in update_data:
+            try:
+                update_data['content_html'] = sanitize_lesson_html(
+                    update_data.get('content_html')
+                )
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+
+        if 'lesson_format' in update_data:
+            fmt = update_data.get('lesson_format')
+            if fmt not in LessonModel.LESSON_FORMATS:
+                raise ValueError('Invalid lesson format')
+            if fmt == 'text':
+                update_data['video_url'] = ''
+            elif fmt == 'video':
+                update_data['content_html'] = ''
+
         if update_data.get('scheduled_at'):
             try:
                 update_data['scheduled_at'] = datetime.fromisoformat(
@@ -447,9 +489,109 @@ class CourseService:
         return {}
 
     @staticmethod
+    def set_lesson_completed(lesson_id, student_id, completed):
+        lesson = LessonModel.get_by_id(lesson_id)
+        if not lesson:
+            return None, 'Lesson not found'
+        LessonViewModel.set_completed(lesson_id, student_id, completed)
+        return CourseService.get_lesson_for_user(lesson_id, user_id=student_id), None
+
+    @staticmethod
     def get_lesson_view_status(lesson_id, student_id):
-        viewed = LessonViewModel.has_viewed(lesson_id, student_id)
-        return {'viewed': viewed}
+        status = LessonViewModel.get_status(lesson_id, student_id)
+        return status
+
+    @staticmethod
+    def _classroom_lesson_sequence(classroom_id, user_id=None, is_teacher=False):
+        courses = CourseModel.get_by_classroom(classroom_id)
+        sequence = []
+        for course in courses:
+            teacher = CourseService._course_teacher_id(course) == str(user_id)
+            modules = ModuleModel.get_by_course(
+                course['_id'], include_hidden=is_teacher or teacher
+            )
+            for module in modules:
+                lessons = LessonModel.get_by_module(
+                    module['_id'], include_hidden=is_teacher or teacher
+                )
+                for lesson in lessons:
+                    sequence.append({
+                        '_id': lesson['_id'],
+                        'title': lesson.get('title'),
+                        'course_id': course['_id'],
+                        'course_name': course.get('name') or '',
+                        'module_id': module['_id'],
+                        'module_name': module.get('name') or '',
+                        'lesson_format': lesson.get('lesson_format') or 'text',
+                    })
+        return sequence
+
+    @staticmethod
+    def _course_lesson_sequence(course_id, user_id=None, is_teacher=False):
+        course = CourseModel.get_by_id(course_id)
+        if not course:
+            return []
+        teacher = is_teacher or CourseService._course_teacher_id(course) == str(user_id)
+        sequence = []
+        modules = ModuleModel.get_by_course(course_id, include_hidden=teacher)
+        for module in modules:
+            lessons = LessonModel.get_by_module(module['_id'], include_hidden=teacher)
+            for lesson in lessons:
+                sequence.append({
+                    '_id': lesson['_id'],
+                    'title': lesson.get('title'),
+                    'course_id': course_id,
+                    'course_name': course.get('name') or '',
+                    'module_id': module['_id'],
+                    'module_name': module.get('name') or '',
+                    'lesson_format': lesson.get('lesson_format') or 'text',
+                })
+        return sequence
+
+    @staticmethod
+    def get_classroom_continue(classroom_id, user_id, is_teacher=False):
+        sequence = CourseService._classroom_lesson_sequence(
+            classroom_id, user_id=user_id, is_teacher=is_teacher
+        )
+        lesson_ids = [item['_id'] for item in sequence]
+        by_id = {item['_id']: item for item in sequence}
+        recent = LessonViewModel.get_recent_for_student(user_id, lesson_ids, limit=3)
+        last_viewed = []
+        for item in recent:
+            lesson = by_id.get(item['lesson_id'])
+            if not lesson:
+                continue
+            last_viewed.append({
+                **lesson,
+                'completed': item['completed'],
+                'last_accessed_at': item['last_accessed_at'],
+            })
+
+        next_lesson = None
+        if sequence:
+            last_id = last_viewed[0]['_id'] if last_viewed else None
+            if last_id:
+                index = next(
+                    (i for i, item in enumerate(sequence) if item['_id'] == last_id),
+                    -1,
+                )
+                if 0 <= index < len(sequence) - 1:
+                    nxt = sequence[index + 1]
+                    if not last_viewed or nxt['_id'] != last_id:
+                        next_lesson = {**nxt, 'completed': LessonViewModel.has_completed(
+                            nxt['_id'], user_id
+                        )}
+            if next_lesson is None and not last_viewed:
+                first = sequence[0]
+                next_lesson = {
+                    **first,
+                    'completed': LessonViewModel.has_completed(first['_id'], user_id),
+                }
+
+        return {
+            'last_viewed': last_viewed,
+            'next_lesson': next_lesson,
+        }
 
     @staticmethod
     def get_lesson_for_user(lesson_id, user_id=None):
@@ -470,8 +612,23 @@ class CourseService:
         if user_id:
             course = CourseModel.get_by_id(lesson.get('course_id'))
             is_teacher = CourseService._course_teacher_id(course) == str(user_id)
-        lesson['viewed'] = bool(
-            user_id and LessonViewModel.has_viewed(lesson_id, user_id)
+        status = (
+            LessonViewModel.get_status(lesson_id, user_id)
+            if user_id
+            else {'viewed': False, 'completed': False}
+        )
+        lesson['viewed'] = bool(status.get('viewed'))
+        lesson['completed'] = bool(status.get('completed'))
+        sequence = CourseService._course_lesson_sequence(
+            lesson.get('course_id'), user_id=user_id, is_teacher=is_teacher
+        )
+        index = next(
+            (i for i, item in enumerate(sequence) if item['_id'] == str(lesson_id)),
+            -1,
+        )
+        lesson['prev_lesson'] = sequence[index - 1] if index > 0 else None
+        lesson['next_lesson'] = (
+            sequence[index + 1] if 0 <= index < len(sequence) - 1 else None
         )
         lesson['decks'] = CourseService.list_lesson_decks(
             lesson_id, user_id=user_id, is_teacher=is_teacher
@@ -1307,4 +1464,313 @@ class CourseService:
             link, user_id, False, viewed
         )
         return serialized, None, 200
+
+    # ── Duplication ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_scheduled_at(value):
+        if not value:
+            return None
+        if hasattr(value, 'isoformat'):
+            return value
+        try:
+            return datetime.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _assert_teacher_owns_classroom(user_id, classroom_id):
+        from src.app.models.classroom_model import ClassroomModel
+
+        classroom = ClassroomModel.get_by_id(classroom_id)
+        if not classroom:
+            return None, 'Classroom not found', 404
+        if str(classroom.get('teacher')) != str(user_id):
+            return None, 'Unauthorized', 403
+        return classroom, None, 200
+
+    @staticmethod
+    def _get_target_collection_id(classroom):
+        return classroom.get('collection') if classroom else None
+
+    @staticmethod
+    def _copy_lesson_decks(source_lesson_id, new_lesson_id, target_collection_id, include_decks):
+        if not include_decks or not target_collection_id:
+            return
+        from src.app.models.lesson_deck_model import LessonDeckModel
+        from src.app.services.deck_service import DeckService
+
+        for link in LessonDeckModel.get_by_lesson(source_lesson_id):
+            cloned = DeckService.clone_deck(link['deck_id'], target_collection_id)
+            if not cloned:
+                continue
+            card_map = cloned.get('card_id_map') or {}
+            old_card_ids = link.get('card_ids') or []
+            if old_card_ids:
+                new_card_ids = [
+                    card_map[str(card_id)]
+                    for card_id in old_card_ids
+                    if str(card_id) in card_map
+                ]
+            else:
+                new_card_ids = []
+            LessonDeckModel.link(new_lesson_id, cloned['deck_id'], new_card_ids)
+
+    @staticmethod
+    def _copy_activity_questions(source_activity_id, new_activity_id):
+        questions = QuestionModel.get_by_activity(source_activity_id, for_student=False)
+        for question in questions:
+            QuestionModel(
+                text=question.get('text'),
+                type=question.get('type'),
+                options=question.get('options') or [],
+                correct_answer=question.get('correct_answer'),
+                show_answer=question.get('show_answer', True),
+                points=question.get('points') or 1,
+                activity_id=new_activity_id,
+            ).save_to_db()
+
+    @staticmethod
+    def duplicate_lesson(
+        lesson_id,
+        user_id,
+        target_module_id,
+        target_course_id,
+        include_decks=False,
+        title=None,
+    ):
+        lesson = LessonModel.get_by_id(lesson_id)
+        if not lesson:
+            return None, 'Lesson not found', 404
+
+        source_course = CourseModel.get_by_id(lesson.get('course_id'))
+        if not source_course or CourseService._course_teacher_id(source_course) != str(user_id):
+            return None, 'Unauthorized', 403
+
+        target_course = CourseModel.get_by_id(target_course_id)
+        if not target_course:
+            return None, 'Target course not found', 404
+
+        target_module = ModuleModel.get_by_id(target_module_id)
+        if not target_module or str(target_module.get('course_id')) != str(target_course_id):
+            return None, 'Target module not found', 404
+
+        classroom, error, status = CourseService._assert_teacher_owns_classroom(
+            user_id, target_course.get('classroom_id')
+        )
+        if error:
+            return None, error, status
+
+        _, src_error, src_status = CourseService._assert_teacher_owns_classroom(
+            user_id, source_course.get('classroom_id')
+        )
+        if src_error:
+            return None, src_error, src_status
+
+        new_lesson = LessonModel(
+            title=title or f"Copy of {lesson.get('title')}",
+            video_url=lesson.get('video_url'),
+            video_type=lesson.get('video_type'),
+            description=lesson.get('description'),
+            content_html=lesson.get('content_html') or '',
+            lesson_format=lesson.get('lesson_format') or 'text',
+            module_id=target_module_id,
+            course_id=target_course_id,
+            visible=lesson.get('visible', True),
+            scheduled_at=CourseService._parse_scheduled_at(lesson.get('scheduled_at')),
+        )
+        result = new_lesson.save_to_db()
+        new_lesson_id = result['lesson_id']
+        CourseService._copy_lesson_decks(
+            lesson_id,
+            new_lesson_id,
+            CourseService._get_target_collection_id(classroom),
+            include_decks,
+        )
+        return {'lesson_id': new_lesson_id}, None, 201
+
+    @staticmethod
+    def duplicate_module(
+        module_id,
+        user_id,
+        target_course_id,
+        include_decks=False,
+        name=None,
+    ):
+        module = ModuleModel.get_by_id(module_id)
+        if not module:
+            return None, 'Module not found', 404
+
+        source_course = CourseModel.get_by_id(module.get('course_id'))
+        if not source_course or CourseService._course_teacher_id(source_course) != str(user_id):
+            return None, 'Unauthorized', 403
+
+        target_course = CourseModel.get_by_id(target_course_id)
+        if not target_course:
+            return None, 'Target course not found', 404
+
+        classroom, error, status = CourseService._assert_teacher_owns_classroom(
+            user_id, target_course.get('classroom_id')
+        )
+        if error:
+            return None, error, status
+
+        _, src_error, src_status = CourseService._assert_teacher_owns_classroom(
+            user_id, source_course.get('classroom_id')
+        )
+        if src_error:
+            return None, src_error, src_status
+
+        target_collection_id = CourseService._get_target_collection_id(classroom)
+        new_module = ModuleModel(
+            name=name or f"Copy of {module.get('name')}",
+            course_id=target_course_id,
+            scheduled_at=CourseService._parse_scheduled_at(module.get('scheduled_at')),
+        )
+        module_result = new_module.save_to_db()
+        new_module_id = module_result['module_id']
+
+        for lesson in LessonModel.get_by_module(module_id, include_hidden=True):
+            copied = LessonModel(
+                title=lesson.get('title'),
+                video_url=lesson.get('video_url'),
+                video_type=lesson.get('video_type'),
+                description=lesson.get('description'),
+                content_html=lesson.get('content_html') or '',
+                lesson_format=lesson.get('lesson_format') or 'text',
+                module_id=new_module_id,
+                course_id=target_course_id,
+                visible=lesson.get('visible', True),
+                scheduled_at=CourseService._parse_scheduled_at(lesson.get('scheduled_at')),
+            )
+            lesson_result = copied.save_to_db()
+            CourseService._copy_lesson_decks(
+                lesson['_id'],
+                lesson_result['lesson_id'],
+                target_collection_id,
+                include_decks,
+            )
+
+        for activity in ActivityModel.get_by_module(module_id, include_hidden=True):
+            copied_activity = ActivityModel(
+                title=activity.get('title'),
+                description=activity.get('description'),
+                module_id=new_module_id,
+                course_id=target_course_id,
+                visible=activity.get('visible', True),
+                scheduled_at=CourseService._parse_scheduled_at(activity.get('scheduled_at')),
+                feedback_mode=activity.get('feedback_mode') or 'immediate',
+            )
+            activity_result = copied_activity.save_to_db()
+            CourseService._copy_activity_questions(
+                activity['_id'],
+                activity_result['activity_id'],
+            )
+
+        return {'module_id': new_module_id}, None, 201
+
+    @staticmethod
+    def duplicate_course(
+        course_id,
+        user_id,
+        target_classroom_id,
+        include_decks=False,
+        name=None,
+    ):
+        course = CourseModel.get_by_id(course_id)
+        if not course or CourseService._course_teacher_id(course) != str(user_id):
+            return None, 'Unauthorized', 403
+
+        classroom, error, status = CourseService._assert_teacher_owns_classroom(
+            user_id, target_classroom_id
+        )
+        if error:
+            return None, error, status
+
+        _, src_error, src_status = CourseService._assert_teacher_owns_classroom(
+            user_id, course.get('classroom_id')
+        )
+        if src_error:
+            return None, src_error, src_status
+
+        new_course = CourseModel(
+            name=name or f"Copy of {course.get('name')}",
+            description=course.get('description') or '',
+            classroom_id=target_classroom_id,
+            teacher_id=user_id,
+        )
+        course_result = new_course.save_to_db()
+        new_course_id = course_result['course_id']
+
+        modules = ModuleModel.get_by_course(course_id, include_hidden=True)
+        for module in modules:
+            CourseService.duplicate_module(
+                module['_id'],
+                user_id,
+                new_course_id,
+                include_decks=include_decks,
+                name=module.get('name'),
+            )
+
+        return {'course_id': new_course_id}, None, 201
+
+    # ── Lesson annotations ────────────────────────────────────────────────────
+
+    @staticmethod
+    def list_lesson_annotations(lesson_id, viewer_user_id):
+        lesson = LessonModel.get_by_id(lesson_id)
+        if not lesson:
+            return None, 'Lesson not found', 404
+        from src.app.models.lesson_annotation_model import LessonAnnotationModel
+
+        items = LessonAnnotationModel.list_visible(lesson_id, viewer_user_id)
+        for item in items:
+            item['is_mine'] = str(item['user_id']) == str(viewer_user_id)
+        return items, None, 200
+
+    @staticmethod
+    def create_lesson_annotation(lesson_id, user_id, author_name, data):
+        lesson = LessonModel.get_by_id(lesson_id)
+        if not lesson:
+            return None, 'Lesson not found', 404
+        from src.app.models.lesson_annotation_model import LessonAnnotationModel
+
+        is_teacher = CourseService.is_course_teacher(lesson.get('course_id'), user_id)
+        try:
+            created = LessonAnnotationModel.create(
+                lesson_id,
+                user_id,
+                author_name,
+                is_public=is_teacher,
+                data=data,
+            )
+        except ValueError as exc:
+            return None, str(exc), 400
+        created['is_mine'] = True
+        return created, None, 201
+
+    @staticmethod
+    def update_lesson_annotation(annotation_id, user_id, data):
+        from src.app.models.lesson_annotation_model import LessonAnnotationModel
+
+        try:
+            updated = LessonAnnotationModel.update(annotation_id, user_id, data)
+        except PermissionError as exc:
+            return None, str(exc), 403
+        if not updated:
+            return None, 'Annotation not found', 404
+        updated['is_mine'] = str(updated['user_id']) == str(user_id)
+        return updated, None, 200
+
+    @staticmethod
+    def delete_lesson_annotation(annotation_id, user_id):
+        from src.app.models.lesson_annotation_model import LessonAnnotationModel
+
+        try:
+            deleted = LessonAnnotationModel.delete(annotation_id, user_id)
+        except PermissionError as exc:
+            return None, str(exc), 403
+        if not deleted:
+            return None, 'Annotation not found', 404
+        return {'message': 'Annotation deleted'}, None, 200
 

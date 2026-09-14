@@ -35,6 +35,19 @@ class CourseController:
 
     @staticmethod
     @token_required
+    def reorder_courses(current_user, token, classroom_id):
+        if not current_user.has_role('teacher'):
+            return jsonify({'error': 'Only teachers can reorder courses'}), 403
+
+        data = request.get_json() or {}
+        if 'course_ids' not in data:
+            return jsonify({'error': 'course_ids is required'}), 400
+
+        CourseService.reorder_courses(classroom_id, data['course_ids'])
+        return jsonify({'message': 'Courses reordered'}), 200
+
+    @staticmethod
+    @token_required
     def get_my_courses(current_user, token):
         result = CourseService.get_courses_for_user(str(current_user._id))
         return jsonify(result), 200
@@ -181,16 +194,23 @@ class CourseController:
             except (ValueError, TypeError):
                 pass
 
-        result = CourseService.create_lesson(
-            title=data['title'],
-            video_url=data.get('video_url', ''),
-            video_type=data.get('video_type', 'youtube'),
-            description=data.get('description', ''),
-            module_id=data['module_id'],
-            course_id=data['course_id'],
-            visible=data.get('visible', True),
-            scheduled_at=scheduled_at,
-        )
+        try:
+            result = CourseService.create_lesson(
+                title=data['title'],
+                video_url=data.get('video_url', ''),
+                video_type=data.get('video_type', 'youtube'),
+                description=data.get('description', ''),
+                content_html=data.get('content_html', ''),
+                module_id=data['module_id'],
+                course_id=data['course_id'],
+                visible=data.get('visible', True),
+                scheduled_at=scheduled_at,
+                lesson_format=data.get('lesson_format', 'text'),
+            )
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        except Exception as exc:
+            return jsonify({'error': str(exc)}), 500
         return jsonify(result), 201
 
     @staticmethod
@@ -210,9 +230,17 @@ class CourseController:
             return jsonify({'error': 'Only teachers can update lessons'}), 403
 
         data = request.get_json() or {}
-        allowed = ['title', 'video_url', 'video_type', 'description', 'visible', 'scheduled_at']
+        allowed = [
+            'title', 'video_url', 'video_type', 'description',
+            'content_html', 'lesson_format', 'visible', 'scheduled_at',
+        ]
         update_data = {k: v for k, v in data.items() if k in allowed}
-        result = CourseService.update_lesson(lesson_id, update_data)
+        try:
+            result = CourseService.update_lesson(lesson_id, update_data)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        except Exception as exc:
+            return jsonify({'error': str(exc)}), 500
         return jsonify(result), 200
 
     @staticmethod
@@ -381,6 +409,62 @@ class CourseController:
     def mark_lesson_viewed(current_user, token, lesson_id):
         CourseService.mark_lesson_viewed(lesson_id, str(current_user._id))
         return jsonify({'viewed': True}), 200
+
+    @staticmethod
+    @token_required
+    def set_lesson_completed(current_user, token, lesson_id):
+        data = request.get_json() or {}
+        completed = data.get('completed', True)
+        # #region agent log
+        import json as _json, os as _os, time as _time
+        _log = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', '..', '..', 'debug-231f74.log'))
+        def _dbg(msg, extra, hid):
+            try:
+                with open(_log, 'a', encoding='utf-8') as _f:
+                    _f.write(_json.dumps({'sessionId': '231f74', 'location': 'course_controller.py:set_lesson_completed', 'message': msg, 'data': extra, 'timestamp': int(_time.time() * 1000), 'hypothesisId': hid, 'runId': 'pre-fix'}) + '\n')
+            except Exception:
+                pass
+        _dbg('endpoint hit', {'lessonId': str(lesson_id), 'completed': bool(completed)}, 'A,E')
+        # #endregion
+        try:
+            result, error = CourseService.set_lesson_completed(
+                lesson_id, str(current_user._id), bool(completed)
+            )
+        except Exception as exc:
+            # #region agent log
+            _dbg('service exception', {'error': str(exc), 'errorType': type(exc).__name__}, 'A,D')
+            # #endregion
+            return jsonify({'error': str(exc)}), 500
+        if error:
+            # #region agent log
+            _dbg('service error', {'error': error}, 'A')
+            # #endregion
+            return jsonify({'error': error}), 404
+        try:
+            return jsonify(result), 200
+        except Exception as exc:
+            # #region agent log
+            _dbg('jsonify failed', {'error': str(exc), 'errorType': type(exc).__name__, 'keys': list(result.keys()) if isinstance(result, dict) else None}, 'D')
+            # #endregion
+            return jsonify({'error': str(exc)}), 500
+
+    @staticmethod
+    @token_required
+    def get_classroom_continue(current_user, token, classroom_id):
+        from src.app.models.classroom_model import ClassroomModel
+
+        classroom = ClassroomModel.get_by_id(classroom_id)
+        if not classroom:
+            return jsonify({'error': 'Classroom not found'}), 404
+        user_id = str(current_user._id)
+        is_teacher = str(classroom.get('teacher') or '') == user_id
+        is_student = ClassroomModel.is_student(classroom_id, user_id)
+        if not is_teacher and not is_student and not current_user.has_role('admin'):
+            return jsonify({'error': 'Not allowed'}), 403
+        result = CourseService.get_classroom_continue(
+            classroom_id, user_id, is_teacher=is_teacher
+        )
+        return jsonify(result), 200
 
     @staticmethod
     @token_required
@@ -576,6 +660,118 @@ class CourseController:
             return jsonify({'error': error}), status
         return jsonify(result), 200
 
+    @staticmethod
+    @token_required
+    def duplicate_course(current_user, token, course_id):
+        if not current_user.has_role('teacher'):
+            return jsonify({'error': 'Only teachers can duplicate courses'}), 403
+
+        data = request.get_json() or {}
+        if 'target_classroom_id' not in data:
+            return jsonify({'error': 'target_classroom_id is required'}), 400
+
+        result, error, status = CourseService.duplicate_course(
+            course_id,
+            str(current_user._id),
+            data['target_classroom_id'],
+            include_decks=bool(data.get('include_decks')),
+            name=data.get('name'),
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify({'id': result['course_id'], 'message': 'Course duplicated'}), status
+
+    @staticmethod
+    @token_required
+    def duplicate_module(current_user, token, module_id):
+        if not current_user.has_role('teacher'):
+            return jsonify({'error': 'Only teachers can duplicate modules'}), 403
+
+        data = request.get_json() or {}
+        if 'target_course_id' not in data:
+            return jsonify({'error': 'target_course_id is required'}), 400
+
+        result, error, status = CourseService.duplicate_module(
+            module_id,
+            str(current_user._id),
+            data['target_course_id'],
+            include_decks=bool(data.get('include_decks')),
+            name=data.get('name'),
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify({'id': result['module_id'], 'message': 'Module duplicated'}), status
+
+    @staticmethod
+    @token_required
+    def duplicate_lesson(current_user, token, lesson_id):
+        if not current_user.has_role('teacher'):
+            return jsonify({'error': 'Only teachers can duplicate lessons'}), 403
+
+        data = request.get_json() or {}
+        if 'target_module_id' not in data or 'target_course_id' not in data:
+            return jsonify({'error': 'target_module_id and target_course_id are required'}), 400
+
+        result, error, status = CourseService.duplicate_lesson(
+            lesson_id,
+            str(current_user._id),
+            data['target_module_id'],
+            data['target_course_id'],
+            include_decks=bool(data.get('include_decks')),
+            title=data.get('title'),
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify({'id': result['lesson_id'], 'message': 'Lesson duplicated'}), status
+
+    @staticmethod
+    @token_required
+    def list_lesson_annotations(current_user, token, lesson_id):
+        result, error, status = CourseService.list_lesson_annotations(
+            lesson_id, str(current_user._id)
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), status
+
+    @staticmethod
+    @token_required
+    def create_lesson_annotation(current_user, token, lesson_id):
+        data = request.get_json() or {}
+        required = ('start_offset', 'end_offset', 'quote')
+        if not all(k in data for k in required):
+            return jsonify({'error': 'start_offset, end_offset and quote are required'}), 400
+        result, error, status = CourseService.create_lesson_annotation(
+            lesson_id,
+            str(current_user._id),
+            current_user.name or '',
+            data,
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), status
+
+    @staticmethod
+    @token_required
+    def update_lesson_annotation(current_user, token, annotation_id):
+        data = request.get_json() or {}
+        result, error, status = CourseService.update_lesson_annotation(
+            annotation_id, str(current_user._id), data
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), status
+
+    @staticmethod
+    @token_required
+    def delete_lesson_annotation(current_user, token, annotation_id):
+        result, error, status = CourseService.delete_lesson_annotation(
+            annotation_id, str(current_user._id)
+        )
+        if error:
+            return jsonify({'error': error}), status
+        return jsonify(result), status
+
 
 course_blueprint = Blueprint('course_blueprint', __name__)
 
@@ -583,15 +779,18 @@ course_blueprint = Blueprint('course_blueprint', __name__)
 course_blueprint.route('/create', methods=['POST'])(CourseController.create_course)
 course_blueprint.route('/mine', methods=['GET'])(CourseController.get_my_courses)
 course_blueprint.route('/by_classroom/<classroom_id>', methods=['GET'])(CourseController.get_courses_by_classroom)
+course_blueprint.route('/by_classroom/<classroom_id>/reorder', methods=['PUT'])(CourseController.reorder_courses)
 course_blueprint.route('/public/<course_id>', methods=['GET'])(CourseController.get_public_course)
 course_blueprint.route('/<course_id>', methods=['GET'])(CourseController.get_course_detail)
 course_blueprint.route('/<course_id>', methods=['PUT'])(CourseController.update_course)
 course_blueprint.route('/<course_id>', methods=['DELETE'])(CourseController.delete_course)
+course_blueprint.route('/<course_id>/duplicate', methods=['POST'])(CourseController.duplicate_course)
 
 # Modules
 course_blueprint.route('/module/create', methods=['POST'])(CourseController.create_module)
 course_blueprint.route('/module/<module_id>', methods=['PUT'])(CourseController.update_module)
 course_blueprint.route('/module/<module_id>', methods=['DELETE'])(CourseController.delete_module)
+course_blueprint.route('/module/<module_id>/duplicate', methods=['POST'])(CourseController.duplicate_module)
 course_blueprint.route('/<course_id>/modules/reorder', methods=['PUT'])(CourseController.reorder_modules)
 
 # Lessons
@@ -599,6 +798,11 @@ course_blueprint.route('/lesson/create', methods=['POST'])(CourseController.crea
 course_blueprint.route('/lesson/<lesson_id>', methods=['GET'])(CourseController.get_lesson)
 course_blueprint.route('/lesson/<lesson_id>', methods=['PUT'])(CourseController.update_lesson)
 course_blueprint.route('/lesson/<lesson_id>', methods=['DELETE'])(CourseController.delete_lesson)
+course_blueprint.route('/lesson/<lesson_id>/annotations', methods=['GET'])(CourseController.list_lesson_annotations)
+course_blueprint.route('/lesson/<lesson_id>/annotations', methods=['POST'])(CourseController.create_lesson_annotation)
+course_blueprint.route('/lesson/annotation/<annotation_id>', methods=['PUT'])(CourseController.update_lesson_annotation)
+course_blueprint.route('/lesson/annotation/<annotation_id>', methods=['DELETE'])(CourseController.delete_lesson_annotation)
+course_blueprint.route('/lesson/<lesson_id>/duplicate', methods=['POST'])(CourseController.duplicate_lesson)
 course_blueprint.route('/module/<module_id>/lessons/reorder', methods=['PUT'])(CourseController.reorder_lessons)
 
 # Activities
@@ -625,7 +829,9 @@ course_blueprint.route('/activity/<activity_id>/submit', methods=['POST'])(Cours
 course_blueprint.route('/activity/<activity_id>/my_answer', methods=['GET'])(CourseController.get_my_answer)
 
 # Lesson Views & Student Progress
+course_blueprint.route('/by_classroom/<classroom_id>/continue', methods=['GET'])(CourseController.get_classroom_continue)
 course_blueprint.route('/lesson/<lesson_id>/viewed', methods=['POST'])(CourseController.mark_lesson_viewed)
+course_blueprint.route('/lesson/<lesson_id>/completed', methods=['PUT'])(CourseController.set_lesson_completed)
 course_blueprint.route('/lesson/<lesson_id>/decks', methods=['GET'])(CourseController.get_lesson_decks)
 course_blueprint.route('/lesson/<lesson_id>/decks', methods=['POST'])(CourseController.link_lesson_deck)
 course_blueprint.route('/lesson/<lesson_id>/decks/<deck_id>/unlock', methods=['POST'])(CourseController.unlock_lesson_deck)

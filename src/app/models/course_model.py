@@ -23,13 +23,14 @@ def _parse_price(value):
 
 class CourseModel:
     def __init__(self, _id=None, name=None, description=None, classroom_id=None,
-                 teacher_id=None, created_at=None, updated_at=None,
+                 teacher_id=None, order=0, created_at=None, updated_at=None,
                  checkout_enabled=False, price=None, **kwargs):
         self._id = str(_id) if _id else None
         self.name = name
         self.description = description or ''
         self.classroom_id = classroom_id
         self.teacher_id = teacher_id
+        self.order = order if order is not None else 0
         self.checkout_enabled = bool(checkout_enabled)
         self.price = _parse_price(price)
         self.created_at = created_at or datetime.now(timezone.utc)
@@ -43,11 +44,19 @@ class CourseModel:
         return f'{base}/checkout/{course_id}' if base else f'/checkout/{course_id}'
 
     def save_to_db(self):
+        classroom_oid = ObjectId(self.classroom_id)
+        max_order = mongo.db.courses.find_one(
+            {'classroom_id': classroom_oid},
+            sort=[('order', -1)],
+            projection={'order': 1},
+        )
+        next_order = (max_order.get('order', -1) + 1) if max_order else 0
         data = {
             'name': self.name,
             'description': self.description,
-            'classroom_id': ObjectId(self.classroom_id),
+            'classroom_id': classroom_oid,
             'teacher_id': ObjectId(self.teacher_id),
+            'order': next_order,
             'checkout_enabled': bool(self.checkout_enabled),
             'price': self.price,
             'created_at': self.created_at,
@@ -64,6 +73,7 @@ class CourseModel:
             'description': self.description,
             'classroom_id': str(self.classroom_id) if self.classroom_id else None,
             'teacher_id': str(self.teacher_id) if self.teacher_id else None,
+            'order': self.order,
             'checkout_enabled': bool(self.checkout_enabled),
             'price': self.price,
             'checkout_url': CourseModel.build_checkout_url(self._id),
@@ -113,13 +123,36 @@ class CourseModel:
         )
 
     @staticmethod
-    def get_by_classroom(classroom_id):
+    def _ensure_orders(classroom_id):
         docs = list(
             mongo.db.courses
             .find({'classroom_id': ObjectId(classroom_id)})
-            .sort('created_at', 1)
+            .sort([('order', 1), ('created_at', 1)])
+        )
+        for index, doc in enumerate(docs):
+            if doc.get('order') != index:
+                mongo.db.courses.update_one(
+                    {'_id': doc['_id']},
+                    {'$set': {'order': index, 'updated_at': datetime.now(timezone.utc)}},
+                )
+
+    @staticmethod
+    def get_by_classroom(classroom_id):
+        CourseModel._ensure_orders(classroom_id)
+        docs = list(
+            mongo.db.courses
+            .find({'classroom_id': ObjectId(classroom_id)})
+            .sort([('order', 1), ('created_at', 1)])
         )
         return [CourseModel(**doc).to_dict() for doc in docs]
+
+    @staticmethod
+    def reorder(classroom_id, course_ids):
+        for index, course_id in enumerate(course_ids):
+            mongo.db.courses.update_one(
+                {'_id': ObjectId(course_id), 'classroom_id': ObjectId(classroom_id)},
+                {'$set': {'order': index, 'updated_at': datetime.now(timezone.utc)}},
+            )
 
     @staticmethod
     def update(course_id, update_data):
@@ -220,14 +253,21 @@ class ModuleModel:
 
 
 class LessonModel:
+    LESSON_FORMATS = ('text', 'video', 'both')
+
     def __init__(self, _id=None, title=None, video_url=None, video_type='youtube',
-                 description=None, order=0, module_id=None, course_id=None,
+                 description=None, content_html=None, lesson_format=None, order=0,
+                 module_id=None, course_id=None,
                  visible=True, scheduled_at=None, created_at=None, updated_at=None, **kwargs):
         self._id = str(_id) if _id else None
         self.title = title
         self.video_url = video_url or ''
         self.video_type = video_type or 'youtube'
         self.description = description or ''
+        self.content_html = content_html or ''
+        self.lesson_format = (
+            lesson_format if lesson_format in self.LESSON_FORMATS else 'text'
+        )
         self.order = order
         self.module_id = module_id
         self.course_id = course_id
@@ -248,6 +288,8 @@ class LessonModel:
             'video_url': self.video_url,
             'video_type': self.video_type,
             'description': self.description,
+            'content_html': self.content_html or '',
+            'lesson_format': self.lesson_format,
             'order': self.order,
             'module_id': ObjectId(self.module_id),
             'course_id': ObjectId(self.course_id),
@@ -261,12 +303,14 @@ class LessonModel:
         return {'lesson_id': self._id}
 
     def to_dict(self):
-        return {
+        data = {
             '_id': self._id,
             'title': self.title,
             'video_url': self.video_url,
             'video_type': self.video_type,
             'description': self.description,
+            'content_html': self.content_html or '',
+            'lesson_format': self.lesson_format,
             'order': self.order,
             'module_id': str(self.module_id) if self.module_id else None,
             'course_id': str(self.course_id) if self.course_id else None,
@@ -279,6 +323,44 @@ class LessonModel:
             'created_at': self.created_at,
             'updated_at': self.updated_at,
         }
+        return LessonModel.resolve_lesson_format(
+            LessonModel.resolve_content_html(data)
+        )
+
+    @staticmethod
+    def resolve_lesson_format(lesson_dict):
+        if not lesson_dict:
+            return lesson_dict
+        result = dict(lesson_dict)
+        fmt = result.get('lesson_format')
+        if fmt in LessonModel.LESSON_FORMATS:
+            return result
+        has_video = bool((result.get('video_url') or '').strip())
+        has_text = bool((result.get('content_html') or '').strip()) or bool(
+            (result.get('description') or '').strip()
+        )
+        if has_video and has_text:
+            result['lesson_format'] = 'both'
+        elif has_video:
+            result['lesson_format'] = 'video'
+        else:
+            result['lesson_format'] = 'text'
+        return result
+
+    @staticmethod
+    def resolve_content_html(lesson_dict):
+        if not lesson_dict:
+            return lesson_dict
+        result = dict(lesson_dict)
+        if (result.get('content_html') or '').strip():
+            return result
+        description = (result.get('description') or '').strip()
+        if description:
+            from html import escape
+            result['content_html'] = f'<p>{escape(description)}</p>'
+        else:
+            result['content_html'] = ''
+        return result
 
     @staticmethod
     def get_by_id(lesson_id):
@@ -529,18 +611,110 @@ class QuestionModel:
 
 
 class LessonViewModel:
-    """Tracks which students have viewed a lesson."""
+    """Tracks lesson access and explicit completion for students."""
+
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _iso(value):
+        if value is None:
+            return None
+        return value.isoformat() if hasattr(value, 'isoformat') else str(value)
 
     @staticmethod
     def mark_viewed(lesson_id, student_id):
+        now = LessonViewModel._now()
         mongo.db.lesson_views.update_one(
             {
                 'lesson_id': ObjectId(lesson_id),
                 'student_id': ObjectId(student_id),
             },
-            {'$set': {'viewed_at': datetime.now(timezone.utc)}},
+            {
+                '$set': {
+                    'viewed_at': now,
+                    'last_accessed_at': now,
+                },
+                '$setOnInsert': {'completed': False, 'completed_at': None},
+            },
             upsert=True,
         )
+
+    @staticmethod
+    def set_completed(lesson_id, student_id, completed):
+        now = LessonViewModel._now()
+        mongo.db.lesson_views.update_one(
+            {
+                'lesson_id': ObjectId(lesson_id),
+                'student_id': ObjectId(student_id),
+            },
+            {
+                '$set': {
+                    'completed': bool(completed),
+                    'completed_at': now if completed else None,
+                    'viewed_at': now,
+                    'last_accessed_at': now,
+                },
+            },
+            upsert=True,
+        )
+
+    @staticmethod
+    def get_status(lesson_id, student_id):
+        doc = mongo.db.lesson_views.find_one({
+            'lesson_id': ObjectId(lesson_id),
+            'student_id': ObjectId(student_id),
+        })
+        if not doc:
+            return {
+                'viewed': False,
+                'completed': False,
+                'last_accessed_at': None,
+                'completed_at': None,
+            }
+        return {
+            'viewed': True,
+            'completed': bool(doc.get('completed')),
+            'last_accessed_at': LessonViewModel._iso(
+                doc.get('last_accessed_at') or doc.get('viewed_at')
+            ),
+            'completed_at': LessonViewModel._iso(doc.get('completed_at')),
+        }
+
+    @staticmethod
+    def get_recent_for_student(student_id, lesson_ids, limit=3):
+        if not lesson_ids:
+            return []
+        docs = list(mongo.db.lesson_views.find({
+            'student_id': ObjectId(student_id),
+            'lesson_id': {'$in': [ObjectId(lid) for lid in lesson_ids]},
+        }))
+
+        def sort_key(doc):
+            return doc.get('last_accessed_at') or doc.get('viewed_at') or datetime.min.replace(
+                tzinfo=timezone.utc
+            )
+
+        docs.sort(key=sort_key, reverse=True)
+        recent = []
+        for doc in docs[:limit]:
+            recent.append({
+                'lesson_id': str(doc['lesson_id']),
+                'completed': bool(doc.get('completed')),
+                'last_accessed_at': LessonViewModel._iso(
+                    doc.get('last_accessed_at') or doc.get('viewed_at')
+                ),
+            })
+        return recent
+
+    @staticmethod
+    def has_completed(lesson_id, student_id):
+        doc = mongo.db.lesson_views.find_one({
+            'lesson_id': ObjectId(lesson_id),
+            'student_id': ObjectId(student_id),
+        })
+        return bool(doc and doc.get('completed'))
 
     @staticmethod
     def get_viewers(lesson_id):

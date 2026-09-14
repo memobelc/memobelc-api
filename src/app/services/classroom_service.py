@@ -89,6 +89,9 @@ class ClassroomService:
                     update_data['price'] = price
             if 'name' in data and data.get('name'):
                 update_data['name'] = data.get('name')
+            if 'image' in data:
+                raw_image = data.get('image')
+                update_data['image'] = raw_image if raw_image else None
 
         if not update_data:
             return classroom, 200

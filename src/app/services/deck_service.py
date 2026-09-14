@@ -50,6 +50,41 @@ class DeckService:
 
         return {"message": "Deck criado com sucesso", "deck_id": deck_id}
 
+    @staticmethod
+    def clone_deck(source_deck_id, target_collection_id):
+        """Clone a deck and its cards into another collection."""
+        deck = DeckModel.get_by_id(source_deck_id)
+        if not deck:
+            return None
+
+        cards_payload = []
+        source_card_ids = [str(card_id) for card_id in (deck.get('cards') or [])]
+        for card_id in source_card_ids:
+            card = CardModel.get_by_id(card_id)
+            if not card:
+                continue
+            card_dict = card.to_dict()
+            card_dict.pop('_id', None)
+            cards_payload.append(card_dict)
+
+        created = DeckService.create_deck(
+            deck.get('name') or 'Deck',
+            target_collection_id,
+            image=deck.get('image'),
+            cards=cards_payload if cards_payload else None,
+            status=deck.get('status'),
+            scheduled_at=deck.get('scheduled_at'),
+            init_progress=False,
+        )
+        new_deck_id = created['deck_id']
+        new_deck = DeckModel.get_by_id(new_deck_id)
+        new_card_ids = [str(card_id) for card_id in (new_deck.get('cards') or [])]
+        card_id_map = {}
+        for old_id, new_id in zip(source_card_ids, new_card_ids):
+            card_id_map[old_id] = new_id
+
+        return {'deck_id': new_deck_id, 'card_id_map': card_id_map}
+
 
     @staticmethod
     def get_all_decks():
