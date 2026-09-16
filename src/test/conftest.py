@@ -23,16 +23,25 @@ from src.app import create_app
 from src.app.database.mongo import mongo
 
 
+def _drop_test_collections():
+    try:
+        for name in list(mongo.db.list_collection_names()):
+            mongo.db[name].drop()
+    except Exception:
+        pass
+
+
 @pytest.fixture(scope="session")
 def app():
     """App Flask em modo teste, conectado ao banco MONGO_URI_TEST."""
     app = create_app()
     app.config["TESTING"] = True
+    app.config["MAIL_SUPPRESS_SEND"] = True
+    with app.app_context():
+        _drop_test_collections()
     yield app
-    # Limpeza opcional ao final da sessão (dropar collections de teste)
     try:
-        for name in list(mongo.db.list_collection_names()):
-            mongo.db[name].drop()
+        _drop_test_collections()
     except Exception:
         pass
 

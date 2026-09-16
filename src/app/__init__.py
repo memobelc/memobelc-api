@@ -50,6 +50,11 @@ def create_app():
             LessonDeckModel.ensure_indexes()
         except Exception:
             pass
+        try:
+            from .services.settings_service import SettingsService
+            SettingsService.bootstrap()
+        except Exception:
+            pass
 
     SWAGGER_URL = "/doc"
     # Usar rota da própria app para o spec (mesma origem, evita CORS no fetch do spec)

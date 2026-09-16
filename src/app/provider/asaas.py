@@ -4,7 +4,7 @@ from datetime import timedelta, timezone
 
 import requests
 
-from src.app.config import Config
+from src.app.services.settings_service import SettingsService
 from src.app.utils.billing_utils import utcnow
 
 
@@ -18,7 +18,7 @@ class AsaasError(Exception):
 class Asaas:
     @staticmethod
     def is_configured():
-        return bool(Config.ASAAS_API_KEY)
+        return bool(SettingsService.get("ASAAS_API_KEY"))
 
     @staticmethod
     def _headers():
@@ -26,12 +26,12 @@ class Asaas:
             raise AsaasError("Asaas is not configured", 503)
         return {
             "Content-Type": "application/json",
-            "access_token": Config.ASAAS_API_KEY,
+            "access_token": SettingsService.get("ASAAS_API_KEY"),
         }
 
     @staticmethod
     def _url(path):
-        base = (Config.ASAAS_API_URL or "https://api-sandbox.asaas.com/v3").rstrip("/")
+        base = (SettingsService.get("ASAAS_API_URL") or "https://api-sandbox.asaas.com/v3").rstrip("/")
         return f"{base}{path}"
 
     @staticmethod
@@ -58,7 +58,7 @@ class Asaas:
 
     @staticmethod
     def verify_webhook(headers):
-        expected = Config.ASAAS_WEBHOOK_TOKEN
+        expected = SettingsService.get("ASAAS_WEBHOOK_TOKEN")
         if not expected:
             return True
         token = headers.get("asaas-access-token") or headers.get("Asaas-Access-Token")

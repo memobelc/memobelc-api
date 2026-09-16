@@ -22,6 +22,7 @@ from src.app.controllers.support_controller import support_blueprint, admin_supp
 from src.app.controllers.profile_controller import profile_blueprint, mission_blueprint
 from src.app.controllers.affiliate_controller import affiliate_blueprint
 from src.app.controllers.admin_affiliate_controller import admin_affiliate_blueprint
+from src.app.controllers.admin_settings_controller import admin_settings_blueprint
 
 
 routes = Blueprint("main", __name__)
@@ -53,3 +54,4 @@ routes.register_blueprint(profile_blueprint, url_prefix="/profile")
 routes.register_blueprint(mission_blueprint, url_prefix="/missions")
 routes.register_blueprint(affiliate_blueprint, url_prefix="/affiliate")
 routes.register_blueprint(admin_affiliate_blueprint, url_prefix="/admin/affiliates")
+routes.register_blueprint(admin_settings_blueprint, url_prefix="/admin/settings")

@@ -6,7 +6,6 @@ from flask import current_app
 from flask_mail import Message
 
 from src.app import mail, mongo
-from src.app.config import Config
 from src.app.models.notification.notification_model import NotificationModel
 from src.app.models.notification.user_notification_settings_model import UserSettingsModel
 from src.app.models.user_model import UserModel
@@ -14,6 +13,7 @@ from src.app.models.user_progress_model import UserProgressModel
 from src.app.models.classroom_model import ClassroomModel
 from src.app.models.deck_model import DeckModel
 from src.app.services.push_notification_service import PushNotificationService
+from src.app.services.settings_service import SettingsService
 
 
 class NotificationService:
@@ -60,7 +60,7 @@ class NotificationService:
         msg = Message(
             subject=f"Memobelc: {title}",
             recipients=[user.email],
-            sender=Config.MAIL_DEFAULT_SENDER or Config.MAIL_USERNAME,
+            sender=SettingsService.mail_sender(),
         )
         msg.body = f"""Olá {user.name or ''}!
 
