@@ -108,3 +108,84 @@ def test_card_create_in_lots_missing(client):
         content_type="application/json",
     )
     assert response.status_code == 400
+
+
+def test_card_create_text_type(client):
+    response = client.post(
+        "/card/create",
+        data=json.dumps({
+            "front": "Capital of France?",
+            "back": "Paris",
+            "card_type": "text",
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["card_type"] == "text"
+    assert data["front"] == "Capital of France?"
+    assert data["back"] == "Paris"
+
+
+def test_card_create_multiple_choice(client):
+    response = client.post(
+        "/card/create",
+        data=json.dumps({
+            "front": "2 + 2?",
+            "card_type": "multiple_choice",
+            "options": ["3", "4", "5", "6"],
+            "correct_index": 1,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["card_type"] == "multiple_choice"
+    assert data["options"] == ["3", "4", "5", "6"]
+    assert data["correct_index"] == 1
+    assert data["back"] == "4"
+
+
+def test_card_create_multiple_choice_invalid(client):
+    response = client.post(
+        "/card/create",
+        data=json.dumps({
+            "front": "2 + 2?",
+            "card_type": "multiple_choice",
+            "options": ["3", "4"],
+            "correct_index": 1,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+
+
+def test_card_create_image(client):
+    response = client.post(
+        "/card/create",
+        data=json.dumps({
+            "front": "Eiffel Tower",
+            "back": "Paris",
+            "card_type": "image",
+            "image": "https://example.com/eiffel.jpg",
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["card_type"] == "image"
+    assert data["image"] == "https://example.com/eiffel.jpg"
+    assert data["media_type"] == "image"
+
+
+def test_card_create_image_missing_image(client):
+    response = client.post(
+        "/card/create",
+        data=json.dumps({
+            "front": "Eiffel Tower",
+            "back": "Paris",
+            "card_type": "image",
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 400

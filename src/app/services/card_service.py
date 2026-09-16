@@ -7,10 +7,86 @@ from src.app import mongo
 from src.app.services.notification_service import NotificationService
 
 
+VALID_CARD_TYPES = ("text", "multiple_choice", "image")
+
+
 class CardService:
     @staticmethod
-    def create_card(front, back, deck_id=None, user=None, audio=None, media_type='text'):
+    def validate_card_payload(data):
+        """Valida e normaliza o payload de criação/atualização de carta."""
+        if not data:
+            raise ValueError("request body is required")
+
+        card_type = data.get("card_type") or "text"
+        if card_type not in VALID_CARD_TYPES:
+            raise ValueError("invalid card_type")
+
+        front = data.get("front")
+        back = data.get("back")
+        audio = data.get("audio")
+        image = data.get("image")
+        options = data.get("options")
+        correct_index = data.get("correct_index")
+        media_type = data.get("media_type") or ("image" if card_type == "image" else "text")
+
+        if card_type == "text":
+            if not front or not back:
+                raise ValueError("front and back are required")
+        elif card_type == "multiple_choice":
+            if not front:
+                raise ValueError("front is required")
+            if not isinstance(options, list) or len(options) != 4:
+                raise ValueError("options must contain exactly 4 answers")
+            if any(not str(opt).strip() for opt in options):
+                raise ValueError("all 4 options must be filled")
+            try:
+                correct_index = int(correct_index)
+            except (TypeError, ValueError):
+                raise ValueError("correct_index must be an integer between 0 and 3")
+            if correct_index < 0 or correct_index > 3:
+                raise ValueError("correct_index must be between 0 and 3")
+            options = [str(opt) for opt in options]
+            back = options[correct_index]
+        elif card_type == "image":
+            if not image or not back:
+                raise ValueError("image and back are required")
+            front = front or ""
+
+        return {
+            "front": front,
+            "back": back,
+            "audio": audio,
+            "media_type": media_type,
+            "card_type": card_type,
+            "options": options if card_type == "multiple_choice" else None,
+            "correct_index": correct_index if card_type == "multiple_choice" else None,
+            "image": image if card_type == "image" else None,
+            "status": data.get("status"),
+            "scheduled_at": data.get("scheduled_at"),
+        }
+
+    @staticmethod
+    def create_card(
+        front,
+        back,
+        deck_id=None,
+        user=None,
+        audio=None,
+        media_type="text",
+        card_type="text",
+        options=None,
+        correct_index=None,
+        image=None,
+        status=None,
+        scheduled_at=None,
+    ):
         """Cria um novo card e o salva no banco de dados."""
+        from src.app.models.publish_status import DEFAULT_STATUS, validate_status_payload
+
+        if status or scheduled_at:
+            status, scheduled_at = validate_status_payload(
+                status or DEFAULT_STATUS, scheduled_at
+            )
         card = CardModel(
             front=front,
             back=back,
@@ -18,6 +94,12 @@ class CardService:
             user=user,
             audio=audio,
             media_type=media_type,
+            card_type=card_type,
+            options=options,
+            correct_index=correct_index,
+            image=image,
+            status=status,
+            scheduled_at=scheduled_at,
         )
         card.save_to_db()
         card_dict = card.to_dict()
@@ -45,10 +127,10 @@ class CardService:
         return "ok"
     
     @staticmethod
-    def get_cards_by_deck(deck_id):
+    def get_cards_by_deck(deck_id, user_id=None):
         """This method is responsible for get all cards in deck"""
         
-        return CardModel.get_cards_by_deck(deck_id)
+        return CardModel.get_cards_by_deck(deck_id, user_id=user_id)
 
     @staticmethod
     def get_all_cards():
@@ -63,14 +145,51 @@ class CardService:
         if not card:
             return None
         if isinstance(card, dict):
-            card = CardModel(**card)
+            card = CardModel.from_dict(card)
 
-        card.front = data.get("front", card.front)
-        card.back = data.get("back", card.back)
-        card.media_type = data.get("media_type", card.media_type)
+        merged = {
+            "front": data.get("front", card.front),
+            "back": data.get("back", card.back),
+            "audio": data.get("audio", card.audio),
+            "media_type": data.get("media_type", card.media_type),
+            "card_type": data.get("card_type", card.card_type),
+            "options": data.get("options", card.options),
+            "correct_index": data.get("correct_index", card.correct_index),
+            "image": data.get("image", card.image),
+        }
+        normalized = CardService.validate_card_payload(merged)
+
+        card.front = normalized["front"]
+        card.back = normalized["back"]
+        card.audio = normalized["audio"]
+        card.media_type = normalized["media_type"]
+        card.card_type = normalized["card_type"]
+        card.options = normalized["options"]
+        card.correct_index = normalized["correct_index"]
+        card.image = normalized["image"]
+        if "status" in data or "scheduled_at" in data:
+            from src.app.models.publish_status import validate_status_payload
+            status, scheduled_at = validate_status_payload(
+                data.get("status", card.status),
+                data.get("scheduled_at") if "scheduled_at" in data else card.scheduled_at,
+            )
+            card.status = status
+            card.scheduled_at = scheduled_at
         card.updated_at = datetime.now(timezone.utc)
 
         card.save_to_db()
+        deck_id = getattr(card, 'deck', None)
+        if not deck_id:
+            deck_doc = mongo.db.decks.find_one({"cards": ObjectId(card._id)})
+            if deck_doc:
+                deck_id = str(deck_doc["_id"])
+        if deck_id:
+            from src.app.models.lesson_deck_model import ContentVisibility
+            from src.app.models.user_progress_model import UserProgressModel
+            users = CardModel.get_user_by_deck(deck_id)
+            for user_id in users:
+                if ContentVisibility.student_should_get_progress(user_id, deck_id, card._id):
+                    UserProgressModel.create_or_update(user_id, deck_id, card._id)
         return card.to_dict()
 
     @staticmethod
@@ -90,8 +209,9 @@ class CardService:
         Verifica se o usuário tem permissão para editar/excluir um card.
         Retorna um dict com: {"can_edit": bool, "reason": str}
         """
+        roles = user_role if isinstance(user_role, (list, tuple, set)) else [user_role]
         # Admin pode editar tudo
-        if user_role == "admin":
+        if "admin" in roles:
             return {"can_edit": True, "reason": "admin"}
         
         # Busca o card

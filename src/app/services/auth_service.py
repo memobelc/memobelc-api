@@ -80,12 +80,35 @@ class AuthService:
                     "name": user.name,
                     "email": user.email,
                     "user_id": str(user._id),
-                    "role": getattr(user, 'role', 'user') or 'user'
+                    "role": user.role,
+                    "roles": user.get_roles(),
+                    "must_change_password": bool(getattr(user, "must_change_password", False)),
                 }
             else:
                 return {"pending": ["User not confirmed!", str(token) if not isinstance(token, str) else token]}
 
         return None
+
+    @staticmethod
+    def issue_auth_token(user, hours=72):
+        token = jwt.encode(
+            {
+                "_id": str(user._id),
+                "email": user.email,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=hours),
+            },
+            current_app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        return {
+            "token": str(token) if not isinstance(token, str) else token,
+            "name": user.name,
+            "email": user.email,
+            "user_id": str(user._id),
+            "role": user.role,
+            "roles": user.get_roles(),
+            "must_change_password": bool(getattr(user, "must_change_password", False)),
+        }
 
     @staticmethod
     def verify_code(user, code):
@@ -124,7 +147,9 @@ class AuthService:
                     "name": user.name,
                     "email": user.email,
                     "user_id": str(user._id),
-                    "role": getattr(user, 'role', 'user') or 'user'
+                    "role": user.role,
+                    "roles": user.get_roles(),
+                    "must_change_password": bool(getattr(user, "must_change_password", False)),
                 }
 
         except jwt.ExpiredSignatureError:
@@ -226,6 +251,24 @@ class AuthService:
             current_app.logger.error(f"Erro ao verificar código de reset: {str(e)}")
             return False
     
+    @staticmethod
+    def change_password(user, current_password, new_password):
+        if not current_password or not new_password:
+            return {"error": "Current and new password are required"}, 400
+        if len(new_password) < 6:
+            return {"error": "Password must be at least 6 characters"}, 400
+        if not check_password_hash(user.password, current_password):
+            return {"error": "Invalid current password"}, 401
+        if current_password == new_password:
+            return {"error": "New password must be different"}, 400
+        cpf_digits = "".join(ch for ch in str(getattr(user, "cpf_cnpj") or "") if ch.isdigit())
+        if cpf_digits and new_password.strip() == cpf_digits:
+            return {"error": "New password cannot be your CPF"}, 400
+        hashed = generate_password_hash(new_password)
+        UserModel.update_password(str(user._id), hashed)
+        updated = UserModel.find_by_id(user._id)
+        return AuthService.issue_auth_token(updated or user), 200
+
     @staticmethod
     def reset_password(email, code, new_password):
         """Redefine a senha usando email e código de verificação."""

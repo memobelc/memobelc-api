@@ -41,12 +41,7 @@ MONGO_URI=mongodb://seu_usuario:sua_senha@seu_host:27017/nome_banco?authSource=a
 GENAI_API_KEY=sua_chave_aqui
 GENAI_MODEL=gemini-pro
 
-# ==========================================
-# STRIPE (PAGAMENTOS)
-# ==========================================
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WHSEC=whsec_...
-PRICE_ID=price_...
+
 
 # ==========================================
 # SEGURANÇA
@@ -269,7 +264,6 @@ Antes de fazer o deploy, verifique:
 - [ ] Todas as variáveis de ambiente configuradas
 - [ ] MONGO_URI aponta para banco de produção (não dev!)
 - [ ] SECRET_KEY é diferente do desenvolvimento
-- [ ] STRIPE_SECRET_KEY é chave LIVE (começa com sk_live_)
 - [ ] Email SMTP configurado com senha de app
 - [ ] FRONT_BASE_URL aponta para domínio correto
 - [ ] Health check configurado
@@ -290,7 +284,6 @@ Após deploy, verifique:
 - [ ] CPU usage normal (< 70%)
 - [ ] Memory usage normal (< 80% do limite)
 - [ ] Testar endpoint de login/cadastro
-- [ ] Testar webhook do Stripe (se aplicável)
 - [ ] Receber email de teste
 
 ---
@@ -359,7 +352,6 @@ GUNICORN_THREADS=2
 - **Gunicorn Docs**: https://docs.gunicorn.org
 - **Flask Docs**: https://flask.palletsprojects.com
 - **MongoDB Atlas**: https://www.mongodb.com/cloud/atlas
-- **Stripe Dashboard**: https://dashboard.stripe.com
 
 ---
 

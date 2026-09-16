@@ -27,7 +27,17 @@ class DecksController:
         else:
             cards = None
 
-        result = DeckService.create_deck(data["name"], data["collection_id"], image, cards)
+        try:
+            result = DeckService.create_deck(
+                data["name"],
+                data["collection_id"],
+                image,
+                cards,
+                status=data.get("status"),
+                scheduled_at=data.get("scheduled_at"),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result), 200
 
     @staticmethod
@@ -84,6 +94,30 @@ class DecksController:
         response = DeckService.check_if_the_user_has_the_deck(user_id, deck_id)
         
         return jsonify(response), 200
+
+    @staticmethod
+    def update_deck(deck_id):
+        data = request.get_json() or {}
+        try:
+            result = DeckService.update_deck(deck_id, data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if not result:
+            return jsonify({"error": "Deck not found"}), 404
+        return jsonify(result), 200
+
+    @staticmethod
+    def delete_deck(deck_id):
+        if DeckService.delete_deck(deck_id):
+            return jsonify({"message": "Deck deleted"}), 200
+        return jsonify({"error": "Deck not found"}), 404
+
+    @staticmethod
+    def get_deck(deck_id):
+        result = DeckService.get_deck(deck_id)
+        if not result:
+            return jsonify({"error": "Deck not found"}), 404
+        return jsonify(result), 200
         
 
 
@@ -96,3 +130,6 @@ decks_blueprint.route("/get_by_collection_id", methods=["GET"])(
 )
 decks_blueprint.route("/save_deck", methods=["POST"])(DecksController.save_deck)
 decks_blueprint.route("/check_if_the_user_has_the_deck", methods=["POST"])(DecksController.check_if_the_user_has_the_deck)
+decks_blueprint.route("/<string:deck_id>", methods=["GET"])(DecksController.get_deck)
+decks_blueprint.route("/<string:deck_id>", methods=["PUT"])(DecksController.update_deck)
+decks_blueprint.route("/<string:deck_id>", methods=["DELETE"])(DecksController.delete_deck)

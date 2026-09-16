@@ -103,3 +103,29 @@ def test_deck_check_if_user_has_missing(client):
         content_type="application/json",
     )
     assert response.status_code == 400
+
+
+def test_deck_create_with_status(client, collection_id):
+    if not collection_id:
+        pytest.skip("no collection_id")
+    response = client.post(
+        "/deck/create",
+        data=json.dumps({
+            "name": "Draft Deck",
+            "collection_id": collection_id,
+            "status": "draft",
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    deck_id = response.get_json().get("deck_id")
+    fetched = client.get(f"/deck/{deck_id}")
+    assert fetched.status_code == 200
+    assert fetched.get_json().get("status") == "draft"
+    updated = client.put(
+        f"/deck/{deck_id}",
+        data=json.dumps({"status": "published"}),
+        content_type="application/json",
+    )
+    assert updated.status_code == 200
+    assert updated.get_json().get("status") == "published"

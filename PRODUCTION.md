@@ -48,9 +48,13 @@ MONGO_URI=mongodb://seu_mongo_uri
 # API Keys
 GENAI_API_KEY=sua_chave_google_ai
 GENAI_MODEL=gemini-pro
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WHSEC=whsec_...
-PRICE_ID=price_...
+
+ASAAS_API_KEY=
+ASAAS_API_URL=https://api.asaas.com/v3
+ASAAS_WEBHOOK_TOKEN=
+GOOGLE_PLAY_PACKAGE_NAME=com.anonymous.memobelc
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=
+GOOGLE_PLAY_RTDN_TOKEN=
 SECRET_KEY=sua_chave_secreta_super_segura_aqui
 
 # Email (SMTP)
@@ -231,7 +235,8 @@ Antes de fazer deploy:
 - [ ] Todas as variáveis de ambiente configuradas
 - [ ] MONGO_URI aponta para banco de PRODUÇÃO
 - [ ] SECRET_KEY é diferente do desenvolvimento
-- [ ] STRIPE_SECRET_KEY é a chave LIVE (não test)
+- [ ] ASAAS_API_KEY e ASAAS_WEBHOOK_TOKEN de produção
+- [ ] Webhook Asaas apontando para /billing/asaas/webhook
 - [ ] ENABLE_DAILY_REMINDERS=false OU configuração de worker único
 - [ ] Health check configurado no Dokploy
 - [ ] Logs sendo monitorados

@@ -3,10 +3,12 @@
 from flask import Blueprint, request, jsonify
 from src.app.middlewares.token_required import token_required
 from src.app.services.chat_service import ChatService
+from src.app.middlewares.require_service_access import require_service_access
 
 class ChatController:
     @staticmethod
     @token_required
+    @require_service_access("talk_to_me")
     def chat(current_user, token):
         data = request.get_json() or {}
         history = data.get("history", [])

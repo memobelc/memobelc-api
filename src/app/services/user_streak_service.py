@@ -10,6 +10,8 @@ class UserStreakService:
     def record_study(user_id: str):
         """Registra que o usuário estudou hoje."""
         UserStreakModel.record_study_day(user_id)
+        from src.app.models.mission_model import MissionModel
+        MissionModel.complete_eligible_streak_missions(user_id)
 
     @staticmethod
     def get_streak(user_id: str):

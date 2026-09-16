@@ -15,9 +15,13 @@ class Config:
     PYTHONPATH = "src"
     MONGO_URI = _default_mongo
     SECRET_KEY = environ["SECRET_KEY"]
-    STRIPE_SECRET_KEY = environ["STRIPE_SECRET_KEY"]
-    PRICE_ID = environ['PRICE_ID']
-    STRIPE_WHSEC = environ["STRIPE_WHSEC"]
+    ASAAS_API_KEY = environ.get("ASAAS_API_KEY")
+    ASAAS_API_URL = environ.get("ASAAS_API_URL", "https://api-sandbox.asaas.com/v3")
+    ASAAS_WEBHOOK_TOKEN = environ.get("ASAAS_WEBHOOK_TOKEN")
+    GOOGLE_PLAY_PACKAGE_NAME = environ.get("GOOGLE_PLAY_PACKAGE_NAME", "com.anonymous.memobelc")
+    GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON")
+    GOOGLE_PLAY_SERVICE_ACCOUNT_FILE = environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE")
+    GOOGLE_PLAY_RTDN_TOKEN = environ.get("GOOGLE_PLAY_RTDN_TOKEN")
     GENAI_API_KEY = environ["GENAI_API_KEY"]
     GENAI_MODEL = environ["GENAI_MODEL"]
 

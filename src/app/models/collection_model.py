@@ -7,7 +7,7 @@ from .user_progress_model import UserProgressModel
 
 
 class CollectionModel:
-    def __init__(self, _id=None, name=None, created_at=None, updated_at=None, image=None, decks=None, user=None, classroom=None, book_id=None):
+    def __init__(self, _id=None, name=None, created_at=None, updated_at=None, image=None, decks=None, user=None, classroom=None, book_id=None, **kwargs):
         self._id = str(_id) if _id else None
         self.name = name
         self.created_at = created_at or datetime.now(timezone.utc)
@@ -98,19 +98,47 @@ class CollectionModel:
     def _enrich_collection_with_decks(collection, user_id):
         """Enriquece um dict de collection com decks, total_cards, pending_cards e review_collections_cards."""
         from .deck_model import DeckModel
+        from .classroom_membership_model import ClassroomMembershipModel
+        from .lesson_deck_model import ContentVisibility
+
+        freeze = None
+        if collection.get("classroom") and user_id:
+            freeze = ClassroomMembershipModel.get_freeze_for_collection(
+                user_id, collection.get("_id")
+            )
+
+        is_teacher = ContentVisibility.is_classroom_teacher(collection, user_id)
         total_cards_in_collection = 0
         pending_cards_in_collection = 0
         list_deck_in_collection = []
         review_collections_cards = []
         for deck_id in collection.get("decks", []):
+            deck_id_str = str(deck_id)
+            if freeze and deck_id_str not in freeze["allowed_decks"]:
+                continue
             deck = DeckModel.get_by_id(deck_id)
             if not deck:
                 continue
+            if freeze:
+                allowed_cards = set(freeze["allowed_cards"].get(deck_id_str) or [])
+                deck["cards"] = [
+                    card_id for card_id in deck.get("cards", []) if str(card_id) in allowed_cards
+                ]
+            else:
+                deck = ContentVisibility.filter_deck_for_user(
+                    deck, user_id, collection, is_teacher=is_teacher
+                )
+                if not deck:
+                    continue
             cards_count = len(deck.get("cards", []))
             total_cards_in_collection += cards_count
-            pending_count = UserProgressModel.count_pending_cards(user_id, deck_id) if user_id else 0
-            pending_cards_in_collection += pending_count
+            allowed_ids = set(str(card_id) for card_id in deck.get("cards", []))
             review_cards = UserProgressModel.get_pending_cards(user_id, deck_id) if user_id else []
+            review_cards = [
+                card for card in review_cards if str(card.get("card_id")) in allowed_ids
+            ]
+            pending_count = len(review_cards)
+            pending_cards_in_collection += pending_count
             for card in review_cards:
                 review_collections_cards.append(card)
             deck.update({
@@ -124,6 +152,7 @@ class CollectionModel:
             "pending_cards": pending_cards_in_collection,
             "decks": list_deck_in_collection,
             "review_collections_cards": review_collections_cards,
+            "archived_classroom": bool(freeze),
         })
         return collection
 

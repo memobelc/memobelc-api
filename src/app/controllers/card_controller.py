@@ -14,26 +14,31 @@ class CardController:
         """This Method create a card"""
 
         data = request.get_json()
-        if not data or "front" not in data or "back" not in data:
-            return jsonify({"error": "front and back are required"}), 400
-        
-        if "user_id" in data:
-            user_id = data["user_id"]
-        else:
-            user_id = None
-            
-        if "deck_id" in data:
-            deck_id = data["deck_id"]
-        else:
-            deck_id = None
-            
-        if "audio" in data:
-            audio = data['audio']
-        else:
-            audio = None
+        try:
+            payload = CardService.validate_card_payload(data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
+        user_id = data.get("user_id") if data else None
+        deck_id = data.get("deck_id") if data else None
 
-        result = CardService.create_card(data['front'], data['back'], deck_id, user_id, audio)
+        try:
+            result = CardService.create_card(
+                payload["front"],
+                payload["back"],
+                deck_id,
+                user_id,
+                payload["audio"],
+                payload["media_type"],
+                payload["card_type"],
+                payload["options"],
+                payload["correct_index"],
+                payload["image"],
+                status=payload.get("status"),
+                scheduled_at=payload.get("scheduled_at"),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result), 201
     
     @staticmethod
@@ -68,7 +73,8 @@ class CardController:
     def get_cards_by_deck(deck_id):
         "This Method is responsible for get all cards in deck"
         
-        response = CardService.get_cards_by_deck(deck_id)
+        user_id = request.args.get("user_id")
+        response = CardService.get_cards_by_deck(deck_id, user_id=user_id)
         
         if response:
             return jsonify(response), 200
@@ -85,7 +91,10 @@ class CardController:
         """This Method update a card by id"""
 
         data = request.get_json()
-        result = CardService.update_card(card_id, data)
+        try:
+            result = CardService.update_card(card_id, data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         if result:
             return jsonify(result), 200
         return jsonify({"error": "Card não encontrado"}), 404
@@ -103,7 +112,10 @@ class CardController:
     def check_card_permission(card_id):
         """Verifica se o usuário atual tem permissão para editar/excluir um card."""
         user_id = str(current_user._id)
-        user_role = getattr(current_user, "role", "user")
+        if hasattr(current_user, "get_roles"):
+            user_role = current_user.get_roles()
+        else:
+            user_role = getattr(current_user, "role", "user")
         
         result = CardService.check_card_permission(card_id, user_id, user_role)
         return jsonify(result), 200

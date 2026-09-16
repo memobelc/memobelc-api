@@ -31,7 +31,13 @@
     { "name": "Classroom", "description": "Sala de aula" },
     { "name": "Notifications", "description": "Notificações" },
     { "name": "Streak", "description": "Sequência de estudos" },
-    { "name": "Books", "description": "Livros" }
+    { "name": "Books", "description": "Livros" },
+    { "name": "Course", "description": "Cursos, atividades e questões" },
+    { "name": "Billing", "description": "Assinaturas, checkout Asaas e Google Play" },
+    { "name": "Plans", "description": "Planos de assinatura" },
+    { "name": "Coupons", "description": "Cupons de desconto" },
+    { "name": "Bundles", "description": "Conjuntos de livros" },
+    { "name": "AdminBilling", "description": "Gestão administrativa de cobranças e acesso" }
   ],
   "paths": {
     "/auth/register": {
@@ -223,6 +229,30 @@
           }
         ],
         "responses": { "200": { "description": "OK" }, "400": { "description": "email obrigatório" } }
+      }
+    },
+    "/auth/change_password": {
+      "put": {
+        "tags": ["Auth"],
+        "summary": "Alterar senha (obrigatório no primeiro acesso após checkout com CPF)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "required": ["current_password", "new_password"],
+            "properties": {
+              "current_password": { "type": "string" },
+              "new_password": { "type": "string" }
+            }
+          }
+        }],
+        "responses": {
+          "200": { "description": "JWT atualizado com must_change_password=false" },
+          "400": { "description": "Senha inválida ou igual ao CPF" },
+          "401": { "description": "Senha atual incorreta" }
+        }
       }
     },
     "/auth/logout": {
@@ -426,12 +456,16 @@
                 "back": { "type": "string" },
                 "deck_id": { "type": "string" },
                 "user_id": { "type": "string" },
-                "audio": { "type": "string" }
+                "audio": { "type": "string" },
+                "card_type": { "type": "string", "enum": ["text", "multiple_choice", "image"] },
+                "options": { "type": "array", "items": { "type": "string" } },
+                "correct_index": { "type": "integer", "minimum": 0, "maximum": 3 },
+                "image": { "type": "string" }
               }
             }
           }
         ],
-        "responses": { "201": { "description": "Carta criada" }, "400": { "description": "front/back obrigatórios" } }
+        "responses": { "201": { "description": "Carta criada" }, "400": { "description": "Campos obrigatórios conforme o tipo da carta" } }
       }
     },
     "/card/create_card_in_lots": {
@@ -644,14 +678,6 @@
         "responses": { "200": { "description": "Dados do pagamento" } }
       }
     },
-    "/payment/webhook": {
-      "post": {
-        "tags": ["Payment"],
-        "summary": "Webhook Stripe (uso interno)",
-        "parameters": [{ "name": "STRIPE_SIGNATURE", "in": "header", "required": true, "type": "string" }],
-        "responses": { "200": { "description": "Processado" } }
-      }
-    },
     "/classroom/create": {
       "post": {
         "tags": ["Classroom"],
@@ -670,6 +696,44 @@
           }
         ],
         "responses": { "200": { "description": "Sala criada" }, "401": { "description": "Apenas professor" } }
+      }
+    },
+    "/classroom/public/{classroom_id}": {
+      "get": {
+        "tags": ["Classroom"],
+        "summary": "Oferta pública da turma (checkout permitido pelo admin e habilitado pelo professor)",
+        "parameters": [{ "name": "classroom_id", "in": "path", "required": true, "type": "string" }],
+        "responses": {
+          "200": { "description": "Nome, preço e checkout_url" },
+          "404": { "description": "Turma inexistente ou checkout indisponível" }
+        }
+      }
+    },
+    "/classroom/{classroom_id}": {
+      "put": {
+        "tags": ["Classroom"],
+        "summary": "Atualizar turma (checkout_enabled e price pelo dono; checkout_allowed pelo admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "classroom_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "checkout_allowed": { "type": "boolean" },
+                "checkout_enabled": { "type": "boolean" },
+                "price": { "type": "number" }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Turma atualizada" },
+          "403": { "description": "Sem permissão ou checkout não permitido pelo admin" }
+        }
       }
     },
     "/classroom/get_classrooms": {
@@ -796,6 +860,44 @@
           }
         ],
         "responses": { "200": { "description": "Token registrado" }, "400": { "description": "push_token obrigatório" } }
+      }
+    },
+    "/notifications/settings": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Obter preferências de notificação do usuário",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Preferências por serviço (app e e-mail)" } }
+      },
+      "patch": {
+        "tags": ["Notifications"],
+        "summary": "Atualizar preferências de notificação do usuário",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "services": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": { "type": "boolean" },
+                      "email": { "type": "boolean" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Preferências atualizadas" },
+          "400": { "description": "Serviço inválido" }
+        }
       }
     },
     "/notifications/send_daily": {
@@ -979,6 +1081,602 @@
           }
         ],
         "responses": { "200": { "description": "Atribuído" }, "403": { "description": "Apenas admin" }, "400": { "description": "user_id/book_id obrigatórios" } }
+      }
+    },
+    "/course/create": {
+      "post": {
+        "tags": ["Course"],
+        "summary": "Criar curso na sala",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body", "in": "body", "required": true,
+          "schema": {
+            "type": "object",
+            "required": ["name", "classroom_id"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "classroom_id": { "type": "string" }
+            }
+          }
+        }],
+        "responses": { "201": { "description": "Curso criado" }, "403": { "description": "Apenas professor" } }
+      }
+    },
+    "/course/public/{course_id}": {
+      "get": {
+        "tags": ["Course"],
+        "summary": "Catálogo público de um curso com checkout habilitado",
+        "parameters": [{ "name": "course_id", "in": "path", "required": true, "type": "string" }],
+        "responses": {
+          "200": { "description": "Nome, descrição, preço e checkout_url" },
+          "404": { "description": "Curso inexistente ou checkout desabilitado" }
+        }
+      }
+    },
+    "/course/{course_id}": {
+      "put": {
+        "tags": ["Course"],
+        "summary": "Atualizar curso (nome, descrição, checkout_enabled, price)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "course_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "checkout_enabled": { "type": "boolean" },
+                "price": { "type": "number" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Curso atualizado" }, "403": { "description": "Sem permissão" } }
+      }
+    },
+    "/course/activity/create": {
+      "post": {
+        "tags": ["Course"],
+        "summary": "Criar atividade",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body", "in": "body", "required": true,
+          "schema": {
+            "type": "object",
+            "required": ["title", "module_id", "course_id"],
+            "properties": {
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "module_id": { "type": "string" },
+              "course_id": { "type": "string" },
+              "visible": { "type": "boolean" },
+              "scheduled_at": { "type": "string" },
+              "feedback_mode": { "type": "string", "enum": ["immediate", "after_correction"] }
+            }
+          }
+        }],
+        "responses": { "201": { "description": "Atividade criada" }, "400": { "description": "Campos obrigatórios" } }
+      }
+    },
+    "/course/activity/{activity_id}": {
+      "get": {
+        "tags": ["Course"],
+        "summary": "Detalhe da atividade com questões (gabarito só para professor ou após feedback)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "activity_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Atividade" }, "404": { "description": "Não encontrada" } }
+      },
+      "put": {
+        "tags": ["Course"],
+        "summary": "Atualizar atividade",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "activity_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body", "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "visible": { "type": "boolean" },
+                "scheduled_at": { "type": "string" },
+                "feedback_mode": { "type": "string", "enum": ["immediate", "after_correction"] }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Atualizada" } }
+      },
+      "delete": {
+        "tags": ["Course"],
+        "summary": "Excluir atividade",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "activity_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Excluída" } }
+      }
+    },
+    "/course/question/create": {
+      "post": {
+        "tags": ["Course"],
+        "summary": "Criar questão (texto simples, múltipla escolha, checkbox ou lacunas)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body", "in": "body", "required": true,
+          "schema": {
+            "type": "object",
+            "required": ["text", "type", "activity_id"],
+            "properties": {
+              "text": { "type": "string" },
+              "type": { "type": "string", "enum": ["short_answer", "multiple_choice", "checkbox", "fill_in_blank", "dropdown", "paragraph"] },
+              "options": { "type": "array", "items": { "type": "string" } },
+              "correct_answer": { "description": "string, array de strings ou respostas das lacunas" },
+              "points": { "type": "integer" },
+              "activity_id": { "type": "string" }
+            }
+          }
+        }],
+        "responses": { "201": { "description": "Questão criada" }, "400": { "description": "Validação" } }
+      }
+    },
+    "/course/question/{question_id}": {
+      "put": {
+        "tags": ["Course"],
+        "summary": "Atualizar questão",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "question_id", "in": "path", "required": true, "type": "string" },
+          { "name": "body", "in": "body", "schema": { "type": "object" } }
+        ],
+        "responses": { "200": { "description": "Atualizada" }, "400": { "description": "Validação" } }
+      },
+      "delete": {
+        "tags": ["Course"],
+        "summary": "Excluir questão",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "question_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Excluída" } }
+      }
+    },
+    "/course/activity/{activity_id}/questions/reorder": {
+      "put": {
+        "tags": ["Course"],
+        "summary": "Reordenar questões da atividade",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "activity_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body", "in": "body", "required": true,
+            "schema": {
+              "type": "object",
+              "required": ["question_ids"],
+              "properties": { "question_ids": { "type": "array", "items": { "type": "string" } } }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Reordenado" } }
+      }
+    },
+    "/course/activity/{activity_id}/submit": {
+      "post": {
+        "tags": ["Course"],
+        "summary": "Aluno envia respostas da atividade",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "activity_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body", "in": "body", "required": true,
+            "schema": {
+              "type": "object",
+              "required": ["answers"],
+              "properties": {
+                "answers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "question_id": { "type": "string" },
+                      "answer": {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Enviado. Nota só aparece no modo immediate ou após correção." } }
+      }
+    },
+    "/course/activity/{activity_id}/approve_all": {
+      "post": {
+        "tags": ["Course"],
+        "summary": "Liberar correção para todos os alunos",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "activity_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Liberado" } }
+      }
+    },
+    "/course/{course_id}/ranking": {
+      "get": {
+        "tags": ["Course"],
+        "summary": "Ranking de XP do curso",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "course_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Ranking" }, "404": { "description": "Curso não encontrado" } }
+      }
+    },
+    "/plans/public": {
+      "get": {
+        "tags": ["Plans"],
+        "summary": "Listar planos públicos ativos",
+        "responses": { "200": { "description": "Lista de planos" } }
+      }
+    },
+    "/plans/admin": {
+      "get": {
+        "tags": ["Plans"],
+        "summary": "Listar todos os planos (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Planos" }, "403": { "description": "Não autorizado" } }
+      },
+      "post": {
+        "tags": ["Plans"],
+        "summary": "Criar plano (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "required": ["name", "price"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "price": { "type": "number" },
+              "cycle": { "type": "string", "enum": ["WEEKLY", "MONTHLY", "QUARTERLY", "SEMIANNUALLY", "YEARLY"] },
+              "trial_days": { "type": "integer" },
+              "included_service_keys": { "type": "array", "items": { "type": "string" } },
+              "included_book_ids": { "type": "array", "items": { "type": "string" } },
+              "google_play_product_id": { "type": "string" }
+            }
+          }
+        }],
+        "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/billing/checkout": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Checkout nativo Asaas (PIX ou cartão) em web, Android e iOS",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "required": ["product_type", "product_id", "billing_type", "cpf_cnpj"],
+            "properties": {
+              "product_type": { "type": "string", "enum": ["plan", "book", "bundle", "course", "classroom"] },
+              "product_id": { "type": "string" },
+              "platform": { "type": "string", "enum": ["web", "android", "ios"] },
+              "billing_type": { "type": "string", "enum": ["PIX", "CREDIT_CARD"] },
+              "coupon_code": { "type": "string" },
+              "cpf_cnpj": { "type": "string" },
+              "credit_card": {
+                "type": "object",
+                "properties": {
+                  "holder_name": { "type": "string" },
+                  "number": { "type": "string" },
+                  "expiry_month": { "type": "string" },
+                  "expiry_year": { "type": "string" },
+                  "ccv": { "type": "string" },
+                  "postal_code": { "type": "string" },
+                  "address_number": { "type": "string" },
+                  "phone": { "type": "string" }
+                }
+              }
+            }
+          }
+        }],
+        "responses": { "200": { "description": "PIX (QR + payload) ou cobrança de cartão" } }
+      }
+    },
+    "/billing/public/checkout": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Checkout público da turma (sempre visitante). Usuário novo: senha inicial = CPF, deve alterar no primeiro acesso.",
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "required": ["product_type", "product_id", "email", "billing_type", "cpf_cnpj"],
+            "properties": {
+              "product_type": { "type": "string", "enum": ["classroom", "course"] },
+              "product_id": { "type": "string" },
+              "name": { "type": "string" },
+              "email": { "type": "string" },
+              "billing_type": { "type": "string", "enum": ["PIX", "CREDIT_CARD"] },
+              "cpf_cnpj": { "type": "string" },
+              "credit_card": { "type": "object" }
+            }
+          }
+        }],
+        "responses": { "200": { "description": "PIX ou URL de cartão. Perfil criado ou vinculado por e-mail/CPF. Sem senha." } }
+      }
+    },
+    "/billing/public/payments/{payment_id}/sync": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Sincronizar pagamento do checkout público (e-mail + CPF, sem login)",
+        "parameters": [
+          { "name": "payment_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "required": ["email", "cpf_cnpj"],
+              "properties": {
+                "email": { "type": "string" },
+                "cpf_cnpj": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Status e granted" } }
+      }
+    },
+    "/billing/public/payments/{payment_id}/pix": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "QR PIX do checkout público (e-mail + CPF, sem login)",
+        "parameters": [
+          { "name": "payment_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "required": ["email", "cpf_cnpj"],
+              "properties": {
+                "email": { "type": "string" },
+                "cpf_cnpj": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "encoded_image, payload e expiration_date" } }
+      }
+    },
+    "/billing/me": {
+      "get": {
+        "tags": ["Billing"],
+        "summary": "Assinatura e entitlements do usuário",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Estado da assinatura" } }
+      }
+    },
+    "/billing/payments": {
+      "get": {
+        "tags": ["Billing"],
+        "summary": "Histórico de pagamentos do usuário",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Pagamentos" } }
+      }
+    },
+    "/billing/payments/{payment_id}/sync": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Sincronizar status de um pagamento Asaas (PIX/cartão)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "payment_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Status e granted" } }
+      }
+    },
+    "/billing/payments/{payment_id}/pix": {
+      "get": {
+        "tags": ["Billing"],
+        "summary": "Obter ou renovar QR Code PIX",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "payment_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "encoded_image, payload e expiration_date" } }
+      }
+    },
+    "/billing/update-payment": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Atualizar cartão da assinatura Asaas (ou manage_url legado do Play)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "cpf_cnpj": { "type": "string" },
+              "credit_card": { "type": "object" }
+            }
+          }
+        }],
+        "responses": { "200": { "description": "Cartão atualizado" } }
+      }
+    },
+    "/billing/cancel": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Cancelar assinatura atual",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Cancelada" } }
+      }
+    },
+    "/billing/change-plan": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Upgrade ou downgrade de plano (mesmo provedor)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Plano atualizado" } }
+      }
+    },
+    "/billing/asaas/webhook": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Webhook Asaas",
+        "responses": { "200": { "description": "Processado" } }
+      }
+    },
+    "/billing/google/verify": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Validar compra Google Play (assinaturas legadas)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Compra validada" } }
+      }
+    },
+    "/billing/google/rtdn": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Real-time Developer Notifications do Google Play",
+        "responses": { "200": { "description": "Processado" } }
+      }
+    },
+    "/entitlements/me": {
+      "get": {
+        "tags": ["Billing"],
+        "summary": "Resolver permissões do usuário autenticado",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Entitlements" } }
+      }
+    },
+    "/coupons/validate": {
+      "post": {
+        "tags": ["Coupons"],
+        "summary": "Validar cupom",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Cupom válido" } }
+      }
+    },
+    "/coupons/admin": {
+      "get": {
+        "tags": ["Coupons"],
+        "summary": "Listar cupons (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Cupons" } }
+      },
+      "post": {
+        "tags": ["Coupons"],
+        "summary": "Criar cupom (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/bundles/public": {
+      "get": {
+        "tags": ["Bundles"],
+        "summary": "Listar conjuntos publicados",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Conjuntos" } }
+      }
+    },
+    "/bundles/admin": {
+      "get": {
+        "tags": ["Bundles"],
+        "summary": "Listar conjuntos (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Conjuntos" } }
+      },
+      "post": {
+        "tags": ["Bundles"],
+        "summary": "Criar conjunto (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/admin/billing/subscriptions": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Listar assinaturas com filtros",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Assinaturas" } }
+      }
+    },
+    "/admin/billing/payments": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Listar compras e transações",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Pagamentos" } }
+      }
+    },
+    "/admin/billing/grants": {
+      "post": {
+        "tags": ["AdminBilling"],
+        "summary": "Liberar plano, livro, conjunto ou serviço manualmente",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Concedido" } }
+      }
+    },
+    "/admin/billing/external-sales": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Listar vendas externas",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Vendas" } }
+      },
+      "post": {
+        "tags": ["AdminBilling"],
+        "summary": "Registrar venda externa e conceder acesso",
+        "security": [{ "Bearer": [] }],
+        "responses": { "201": { "description": "Registrada" } }
+      }
+    },
+    "/admin/billing/access": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Regras de visibilidade dos serviços",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Regras" } }
+      }
+    },
+    "/admin/billing/classrooms": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Listar turmas e flags de checkout",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Turmas" } }
+      }
+    },
+    "/admin/billing/classrooms/{classroom_id}": {
+      "put": {
+        "tags": ["AdminBilling"],
+        "summary": "Permitir ou bloquear checkout da turma",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "classroom_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "checkout_allowed": { "type": "boolean" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Turma atualizada" } }
+      }
+    },
+    "/admin/billing/classroom-checkouts": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Histórico e comprovantes de checkout de turmas",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Pagamentos com comprador, turma e receipt_url" } }
       }
     }
   }

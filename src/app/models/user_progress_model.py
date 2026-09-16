@@ -113,9 +113,13 @@ class UserProgressModel:
                 "card_id": str(card["card_id"]),
                 "last_reviewed": card["last_reviewed"],
                 "next_review": card["next_review"],
-                "front": card["card_details"]["front"],
-                "back": card["card_details"]["back"],
-                "audio": card["card_details"].get("audio",  None),
+                "front": card["card_details"].get("front"),
+                "back": card["card_details"].get("back"),
+                "audio": card["card_details"].get("audio", None),
+                "card_type": card["card_details"].get("card_type", "text"),
+                "options": card["card_details"].get("options"),
+                "correct_index": card["card_details"].get("correct_index"),
+                "image": card["card_details"].get("image"),
             }
             for card in pending_cards
         ]

@@ -1,5 +1,4 @@
 from src.app import mongo
-from src.app.provider.stripe import Stripe
 import random
 from bson import ObjectId
 import string
@@ -7,34 +6,197 @@ from datetime import datetime
 
 from src.app.models.push_notification_model import PushNotificationModel
 
+ALLOWED_ROLES = ("user", "teacher", "admin", "affiliate")
+ADDRESS_FIELDS = (
+    "postal_code",
+    "street",
+    "number",
+    "complement",
+    "neighborhood",
+    "city",
+    "state",
+)
+
+
 class UserModel:
-    def __init__(self, _id=None, name = None, email=None, password=None, collections=None, customer_id=None, role='user', **kwargs):
+    def __init__(self, _id=None, name = None, email=None, password=None, collections=None, customer_id=None, asaas_customer_id=None, role='user', roles=None, **kwargs):
         self._id = str(_id) if _id else None
         self.name = name
         self.email = email
         self.password = password
         self.collections = collections or []
         self.customer_id = customer_id
-        self.role = role
+        self.asaas_customer_id = asaas_customer_id
+        self.cpf_cnpj = kwargs.get("cpf_cnpj")
+        self.image = kwargs.get("image")
+        self.address = kwargs.get("address") or {}
+        self.coins = int(kwargs.get("coins") or 0)
+        self.is_confirmed = kwargs.get("is_confirmed", False)
+        self.must_change_password = bool(kwargs.get("must_change_password", False))
+        self.roles = UserModel.normalize_roles(role=role, roles=roles)
+        self.role = UserModel.primary_role(self.roles)
+
+    @staticmethod
+    def normalize_roles(role=None, roles=None):
+        """Normaliza role string legado e/ou lista roles para um array válido e único."""
+        result = []
+        if roles:
+            if isinstance(roles, str):
+                result.append(roles)
+            else:
+                result.extend(list(roles))
+        elif role:
+            result.append(role)
+
+        seen = []
+        for item in result:
+            if item in ALLOWED_ROLES and item not in seen:
+                seen.append(item)
+        return seen or ["user"]
+
+    @staticmethod
+    def primary_role(roles):
+        """Role primária para compatibilidade com o campo legado `role`."""
+        if "admin" in roles:
+            return "admin"
+        if "teacher" in roles:
+            return "teacher"
+        return "user"
+
+    def has_role(self, role):
+        return role in self.roles
+
+    def get_roles(self):
+        return list(self.roles)
 
 
     def save_to_db(self):
         """Salva o usuário no banco de dados MongoDB"""
-        
-        customer = Stripe.create_customer(self.email)
         user_data = {
             'name': self.name,
             'email': self.email,
             'password': self.password,
             'is_confirmed': False,
             "collections": self.collections,
-            "customer_id": customer.get('id'),
-            "role": self.role
+            "customer_id": self.customer_id,
+            "asaas_customer_id": self.asaas_customer_id,
+            "role": self.role,
+            "roles": self.roles,
+            "must_change_password": bool(self.must_change_password),
+            "cpf_cnpj": self.cpf_cnpj,
+            "image": self.image,
+            "address": self.address or {},
+            "coins": int(self.coins or 0),
         }
-        
-        
-        mongo.db.users.insert_one(user_data)
+        result = mongo.db.users.insert_one(user_data)
+        self._id = str(result.inserted_id)
         return True
+
+    @staticmethod
+    def set_asaas_customer_id(user_id, asaas_customer_id):
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"asaas_customer_id": asaas_customer_id}},
+        )
+
+    @staticmethod
+    def set_cpf_cnpj(user_id, cpf_cnpj):
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"cpf_cnpj": cpf_cnpj}},
+        )
+
+    @staticmethod
+    def set_name(user_id, name):
+        if not name:
+            return
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"name": name}},
+        )
+
+    @staticmethod
+    def normalize_address(data):
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("address must be an object")
+        return {
+            field: str(data.get(field) or "").strip()
+            for field in ADDRESS_FIELDS
+        }
+
+    @staticmethod
+    def update_profile(user_id, updates):
+        if not updates:
+            return UserModel.find_by_id(user_id)
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": updates},
+        )
+        if result.matched_count == 0:
+            return None
+        return UserModel.find_by_id(user_id)
+
+    @staticmethod
+    def increment_coins(user_id, amount):
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$inc": {"coins": int(amount)}},
+        )
+        if result.matched_count == 0:
+            return None
+        refreshed = mongo.db.users.find_one({"_id": ObjectId(user_id)}, {"coins": 1})
+        return int((refreshed or {}).get("coins") or 0)
+
+    @staticmethod
+    def spend_coins(user_id, amount):
+        amount = int(amount)
+        if amount <= 0:
+            return None
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id), "coins": {"$gte": amount}},
+            {"$inc": {"coins": -amount}},
+        )
+        if result.matched_count == 0:
+            return None
+        refreshed = mongo.db.users.find_one({"_id": ObjectId(user_id)}, {"coins": 1})
+        return int((refreshed or {}).get("coins") or 0)
+
+    @staticmethod
+    def get_document(user_id):
+        return mongo.db.users.find_one({"_id": ObjectId(user_id)})
+
+    @staticmethod
+    def find_by_cpf_cnpj(cpf_cnpj):
+        digits = "".join(ch for ch in str(cpf_cnpj or "") if ch.isdigit())
+        if not digits:
+            return None
+        candidates = [digits]
+        if len(digits) == 11:
+            candidates.append(f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}")
+        elif len(digits) == 14:
+            candidates.append(f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}")
+        user_data = mongo.db.users.find_one({"cpf_cnpj": {"$in": candidates}})
+        if user_data:
+            return UserModel(**user_data)
+        return None
+
+    @staticmethod
+    def create_pending_user(name, email):
+        """Cria usuário pendente para venda externa (sem senha definida)."""
+        existing = UserModel.find_by_email(email)
+        if existing:
+            return existing
+        from werkzeug.security import generate_password_hash
+        import uuid
+        user = UserModel(
+            name=name or email.split("@")[0],
+            email=email.lower(),
+            password=generate_password_hash(uuid.uuid4().hex),
+        )
+        user.save_to_db()
+        return UserModel.find_by_email(email)
     
     @staticmethod
     def add_collections_to_user(user_id, collection_ids):
@@ -53,7 +215,12 @@ class UserModel:
     @staticmethod
     def find_by_email(email):
         """Busca um usuário pelo email"""
-        user_data = mongo.db.users.find_one({'email': email})
+        if not email:
+            return None
+        email_lower = str(email).strip().lower()
+        user_data = mongo.db.users.find_one({'email': email_lower})
+        if not user_data:
+            user_data = mongo.db.users.find_one({'email': email})
         if user_data:
             return UserModel(**user_data)
         return None
@@ -144,7 +311,7 @@ class UserModel:
             
             mongo.db.users.update_one(
                 {"_id": ObjectId(user_id)},
-                {"$set": {'password': new_password}}
+                {"$set": {'password': new_password, 'must_change_password': False}}
             )
             return True
         
@@ -221,6 +388,55 @@ class UserModel:
 
 
 
+    @staticmethod
+    def list_users(search=None):
+        """Lista usuários para gestão admin (id, nome, email, cpf, roles)."""
+        query = {}
+        if search:
+            term = str(search).strip()
+            digits = "".join(ch for ch in term if ch.isdigit())
+            clauses = [
+                {"name": {"$regex": term, "$options": "i"}},
+                {"email": {"$regex": term, "$options": "i"}},
+                {"cpf_cnpj": {"$regex": term, "$options": "i"}},
+            ]
+            if digits:
+                clauses.append({"cpf_cnpj": {"$regex": digits}})
+            query = {"$or": clauses}
+        cursor = mongo.db.users.find(
+            query,
+            {"name": 1, "email": 1, "role": 1, "roles": 1, "coins": 1, "image": 1, "cpf_cnpj": 1},
+        )
+        users = []
+        for user_data in cursor:
+            roles = UserModel.normalize_roles(
+                role=user_data.get("role"),
+                roles=user_data.get("roles"),
+            )
+            users.append({
+                "_id": str(user_data["_id"]),
+                "name": user_data.get("name"),
+                "email": user_data.get("email"),
+                "cpf_cnpj": user_data.get("cpf_cnpj"),
+                "role": UserModel.primary_role(roles),
+                "roles": roles,
+                "coins": int(user_data.get("coins") or 0),
+                "image": user_data.get("image"),
+            })
+        return users
+
+    @staticmethod
+    def update_roles(user_id, roles):
+        """Atualiza as roles de um usuário. Retorna o usuário atualizado ou None."""
+        normalized = UserModel.normalize_roles(roles=roles)
+        result = mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"roles": normalized, "role": UserModel.primary_role(normalized)}},
+        )
+        if result.matched_count == 0:
+            return None
+        return UserModel.find_by_id(user_id)
+
     def to_dict(self):
         """Converte o objeto UserModel para dicionário"""
         return {
@@ -228,6 +444,8 @@ class UserModel:
             'name': self.name,
             'email': self.email,
             'collections': [str(ObjectId(collection_id)) for collection_id in self.collections],
-            'customer_id':self.customer_id,
-            'role': self.role
+            'customer_id': self.customer_id,
+            'asaas_customer_id': self.asaas_customer_id,
+            'role': self.role,
+            'roles': self.roles,
         }

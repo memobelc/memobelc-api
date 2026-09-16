@@ -2,8 +2,13 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from datetime import datetime, timezone
 
-from src.app import mongo
+from flask import current_app
+from flask_mail import Message
+
+from src.app import mail, mongo
+from src.app.config import Config
 from src.app.models.notification.notification_model import NotificationModel
+from src.app.models.notification.user_notification_settings_model import UserSettingsModel
 from src.app.models.user_model import UserModel
 from src.app.models.user_progress_model import UserProgressModel
 from src.app.models.classroom_model import ClassroomModel
@@ -19,6 +24,58 @@ class NotificationService:
     TYPE_NEW_CARDS = "new_cards"
     TYPE_TEACHER_CUSTOM = "teacher_custom"
     TYPE_ADMIN_CUSTOM = "admin_custom"
+    TYPE_SUPPORT = "support"
+    TYPE_AFFILIATE = "affiliate"
+    TYPE_AFFILIATE_SALE = "affiliate_sales"
+
+    # ---------- Preferências ----------
+    @staticmethod
+    def get_user_settings(user_id: str) -> Dict[str, Any]:
+        return UserSettingsModel.get_settings(user_id)
+
+    @staticmethod
+    def update_user_settings(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return UserSettingsModel.update_settings(user_id, data)
+
+    @staticmethod
+    def _service_pref(user_id: str, notification_type: str) -> Dict[str, bool]:
+        settings = UserSettingsModel.get_settings(user_id)
+        pref = (settings.get("services") or {}).get(notification_type) or {"enabled": True, "email": False}
+        return {"enabled": bool(pref.get("enabled", True)), "email": bool(pref.get("email", False))}
+
+    @staticmethod
+    def _should_notify(user_id: str, notification_type: str) -> bool:
+        return NotificationService._service_pref(user_id, notification_type)["enabled"]
+
+    @staticmethod
+    def _should_email(user_id: str, notification_type: str) -> bool:
+        pref = NotificationService._service_pref(user_id, notification_type)
+        return pref["enabled"] and pref["email"]
+
+    @staticmethod
+    def _send_notification_email(user_id: str, title: str, body: str) -> None:
+        user = UserModel.find_by_id(user_id)
+        if not user or not getattr(user, "email", None):
+            return
+        msg = Message(
+            subject=f"Memobelc: {title}",
+            recipients=[user.email],
+            sender=Config.MAIL_DEFAULT_SENDER or Config.MAIL_USERNAME,
+        )
+        msg.body = f"""Olá {user.name or ''}!
+
+{title}
+
+{body}
+
+Você recebeu este e-mail porque ativou notificações por e-mail no Memobelc.
+
+Equipe Memobelc
+""".strip()
+        try:
+            mail.send(msg)
+        except Exception as exc:
+            current_app.logger.error(f"Failed to send notification email to {user.email}: {exc}")
 
     # ---------- Funções utilitárias ----------
     @staticmethod
@@ -29,15 +86,63 @@ class NotificationService:
         body: str,
         extra_data: Optional[Dict[str, Any]] = None,
     ):
+        if not NotificationService._should_notify(user_id, notification_type):
+            # #region agent log
+            try:
+                import json
+                import time
+                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "75e675",
+                        "hypothesisId": "D",
+                        "location": "notification_service.py:_create_and_push",
+                        "message": "notify skipped by settings",
+                        "data": {"notification_type": notification_type, "has_user_id": bool(user_id)},
+                        "timestamp": int(time.time() * 1000),
+                    }, default=str) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            return
+
         data = {"title": title, "body": body}
         if extra_data:
             data.update(extra_data)
 
-        # Cria registro interno
         NotificationModel.create(user_id=user_id, notification_type=notification_type, data=data)
-
-        # Dispara push (se houver token cadastrado)
+        # #region agent log
+        if notification_type in ("affiliate_sales", "affiliate"):
+            try:
+                import json
+                import time
+                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "75e675",
+                        "hypothesisId": "D",
+                        "location": "notification_service.py:_create_and_push",
+                        "message": "notification created",
+                        "data": {
+                            "notification_type": notification_type,
+                            "has_user_id": bool(user_id),
+                            "email": NotificationService._should_email(user_id, notification_type),
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }, default=str) + "\n")
+            except Exception:
+                pass
+        # #endregion
         PushNotificationService.send_to_user(user_id=user_id, title=title, body=body, data=extra_data or {})
+
+        if NotificationService._should_email(user_id, notification_type):
+            app = current_app._get_current_object()
+            def _send_email_async():
+                with app.app_context():
+                    NotificationService._send_notification_email(user_id, title, body)
+            try:
+                import threading
+                threading.Thread(target=_send_email_async, daemon=True).start()
+            except Exception as exc:
+                current_app.logger.error(f"Failed to start notification email thread: {exc}")
 
     # ---------- API para controllers ----------
     @staticmethod
@@ -198,5 +303,76 @@ class NotificationService:
             )
 
         return {"sent_to": len(target_users)}
+
+    @staticmethod
+    def _admin_user_ids(exclude_user_id: Optional[str] = None) -> List[str]:
+        cursor = mongo.db.users.find(
+            {"$or": [{"role": "admin"}, {"roles": "admin"}]},
+            {"_id": 1},
+        )
+        ids = [str(user["_id"]) for user in cursor]
+        if exclude_user_id:
+            ids = [uid for uid in ids if uid != str(exclude_user_id)]
+        return ids
+
+    @staticmethod
+    def notify_admins_new_support_message(ticket_id: str, user_id: str, preview: str):
+        """Notifica admins quando um usuário envia mensagem de suporte."""
+        user = UserModel.find_by_id(user_id)
+        sender_name = (user.name if user and user.name else None) or "Usuário"
+        title = "Nova mensagem de suporte"
+        body = f"{sender_name}: {preview}" if preview else f"{sender_name} enviou uma mensagem."
+
+        for admin_id in NotificationService._admin_user_ids(exclude_user_id=user_id):
+            NotificationService._create_and_push(
+                user_id=admin_id,
+                notification_type=NotificationService.TYPE_SUPPORT,
+                title=title,
+                body=body,
+                extra_data={"ticket_id": str(ticket_id), "user_id": str(user_id)},
+            )
+
+    @staticmethod
+    def notify_user_support_reply(user_id: str, ticket_id: str, preview: str, admin_id: str):
+        """Notifica o usuário quando o admin responde no suporte."""
+        if str(user_id) == str(admin_id):
+            return
+
+        title = "Resposta do suporte"
+        body = preview or "O suporte respondeu a sua mensagem."
+        NotificationService._create_and_push(
+            user_id=str(user_id),
+            notification_type=NotificationService.TYPE_SUPPORT,
+            title=title,
+            body=body,
+            extra_data={"ticket_id": str(ticket_id)},
+        )
+
+    @staticmethod
+    def notify_admins_affiliate(title: str, body: str, kind: str, extra_data: Optional[Dict[str, Any]] = None):
+        payload = {"kind": kind}
+        if extra_data:
+            payload.update(extra_data)
+        for admin_id in NotificationService._admin_user_ids(exclude_user_id=payload.get("user_id")):
+            NotificationService._create_and_push(
+                user_id=admin_id,
+                notification_type=NotificationService.TYPE_AFFILIATE,
+                title=title,
+                body=body,
+                extra_data=payload,
+            )
+
+    @staticmethod
+    def notify_affiliate_sale(user_id: str, title: str, body: str, extra_data: Optional[Dict[str, Any]] = None):
+        """Notifica o afiliado sobre uma venda (app + e-mail conforme preferências)."""
+        if not user_id:
+            return
+        NotificationService._create_and_push(
+            user_id=str(user_id),
+            notification_type=NotificationService.TYPE_AFFILIATE_SALE,
+            title=title,
+            body=body,
+            extra_data=extra_data or {},
+        )
 
 

@@ -148,11 +148,21 @@ class AuthController:
 
     @staticmethod
     @token_required
+    def change_password(current_user, token):
+        data = request.get_json() or {}
+        payload, status = AuthService.change_password(
+            current_user,
+            data.get("current_password") or data.get("password") or "",
+            data.get("new_password") or "",
+        )
+        return jsonify(payload), status
+
+    @staticmethod
+    @token_required
     def logout(current_user, token):
         """Logout lógico da API: remove tokens de push do usuário para não receber notificações."""
         AuthService.logout_user(str(current_user._id))
         return jsonify({"message": "Logged out successfully"}), 200
-        
 
 
 auth_blueprint = Blueprint("auth_blueprint", __name__)
@@ -166,4 +176,5 @@ auth_blueprint.route("/verify_reset_code", methods=["POST"])(AuthController.veri
 auth_blueprint.route("/reset_password", methods=["PUT"])(AuthController.reset_password)
 auth_blueprint.route("/access_log", methods=['POST'])(AuthController.save_user_access_log)
 auth_blueprint.route("/mail_list", methods=["POST"])(AuthController.mail_list)
+auth_blueprint.route("/change_password", methods=["PUT"])(AuthController.change_password)
 auth_blueprint.route("/logout", methods=["POST"])(AuthController.logout)

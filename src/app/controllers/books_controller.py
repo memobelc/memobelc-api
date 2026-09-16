@@ -4,6 +4,8 @@ from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import BadRequest, Unauthorized
 from src.app.services.books_service import BookService
 from src.app.middlewares.token_required import token_required
+from src.app.services.entitlement_service import EntitlementService
+from src.app.models.payment_model import PaymentModel
 from src.app import mongo
 from bson import ObjectId
 
@@ -15,7 +17,7 @@ class BookController:
     @token_required
     def create_book(current_user, token):
         """Cria um novo livro (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
@@ -29,18 +31,24 @@ class BookController:
         if "nivel" not in data:
             return jsonify({"error": "Missing required field: nivel"}), 400
 
-        result = BookService.create_book(data, current_user._id)
+        try:
+            result = BookService.create_book(data, current_user._id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result), 201
 
     @staticmethod
     @token_required
     def update_book(current_user, token, book_id):
         """Atualiza um livro (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
-        updated = BookService.update_book(book_id, data)
+        try:
+            updated = BookService.update_book(book_id, data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         if updated:
             return jsonify({"message": "Book updated successfully"}), 200
@@ -50,7 +58,7 @@ class BookController:
     @token_required
     def delete_book(current_user, token, book_id):
         """Deleta um livro (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         deleted = BookService.delete_book(book_id)
@@ -63,7 +71,7 @@ class BookController:
     @token_required
     def get_all_books(current_user, token):
         """Retorna todos os livros (apenas admin para ver tudo)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         books = BookService.get_all_books()
@@ -86,16 +94,9 @@ class BookController:
         if not book:
             return jsonify({"error": "Book not found"}), 404
 
-        # Verifica se o usuário tem acesso ao livro
-        if not book.get("is_free"):
-            user_obj_id = ObjectId(current_user._id)
-            book_obj_id = ObjectId(book_id)
-            has_access = mongo.db.user_books.find_one({
-                "user_id": user_obj_id,
-                "book_id": book_obj_id,
-            })
-            if not has_access:
-                return jsonify({"error": "Access denied. Book requires payment."}), 403
+        allowed, payload = EntitlementService.can_access_book(current_user, book_id)
+        if not allowed:
+            return jsonify(payload), 403
 
         return jsonify(book), 200
 
@@ -114,21 +115,45 @@ class BookController:
         if not book:
             return jsonify({"error": "Book not found"}), 404
 
-        # Se for gratuito ou se o usuário já pagou (verificado externamente), adiciona
         if book.get("is_free"):
             BookService.add_book_to_user(current_user._id, book_id)
             return jsonify({"message": "Book added to your library"}), 200
-        else:
-            # Para livros pagos, assumimos que o pagamento foi processado externamente
-            # e o usuário está apenas confirmando
+
+        allowed, _payload = EntitlementService.can_access_book(current_user, book_id)
+        if allowed:
             BookService.add_book_to_user(current_user._id, book_id)
-            return jsonify({"message": "Book purchased and added to your library"}), 200
+            return jsonify({"message": "Book already available in your library"}), 200
+
+        confirmed = PaymentModel.confirmed_for_product(current_user._id, "book", book_id)
+        if not confirmed:
+            return jsonify({
+                "error": "Payment not confirmed. Use /billing/checkout to buy this book.",
+                "code": "payment_required",
+            }), 402
+
+        EntitlementService.grant_book(current_user._id, book_id, source="purchase", source_id=confirmed["_id"])
+        return jsonify({"message": "Book purchased and added to your library"}), 200
+
+    @staticmethod
+    @token_required
+    def purchase_with_coins(current_user, token):
+        data = request.get_json() or {}
+        book_id = data.get("book_id")
+        if not book_id:
+            return jsonify({"error": "Missing book_id"}), 400
+        try:
+            result = BookService.purchase_with_coins(current_user._id, book_id)
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "not found" in message.lower() else 400
+            return jsonify({"error": message}), status
+        return jsonify(result), 200
 
     @staticmethod
     @token_required
     def admin_get_book_with_users(current_user, token, book_id):
         """Retorna detalhes do livro e lista de usuários com informação se possuem o livro (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         book = BookService.get_book_by_id(book_id)
@@ -167,7 +192,7 @@ class BookController:
     @token_required
     def admin_assign_book_to_user(current_user, token):
         """Atribui um livro a um usuário específico (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
@@ -177,14 +202,16 @@ class BookController:
         if not user_id or not book_id:
             return jsonify({"error": "Missing user_id or book_id"}), 400
 
-        BookService.add_book_to_user(user_id, book_id)
+        EntitlementService.grant_book(
+            user_id, book_id, source="manual", granted_by=current_user._id, notes="admin assign"
+        )
         return jsonify({"message": "Book assigned to user"}), 200
 
     @staticmethod
     @token_required
     def admin_generate_collection(current_user, token, book_id):
         """Gera collection e decks para livro que ainda não tem collection_id (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         result = BookService.generate_collection_for_book(book_id)
@@ -198,7 +225,7 @@ class BookController:
     @token_required
     def admin_add_chapter(current_user, token):
         """Adiciona um capítulo ao livro (apenas admin). Cria um deck na collection do livro."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
@@ -216,7 +243,7 @@ class BookController:
     @token_required
     def admin_add_cards_to_chapter(current_user, token):
         """Adiciona cartas ao deck de um capítulo (apenas admin)."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.get_json()
@@ -313,6 +340,9 @@ books_blueprint.route("/get/<string:book_id>", methods=["GET"])(
 )
 books_blueprint.route("/purchase", methods=["POST"])(
     BookController.purchase_book
+)
+books_blueprint.route("/purchase-with-coins", methods=["POST"])(
+    BookController.purchase_with_coins
 )
 books_blueprint.route("/mark-chapter-read", methods=["POST"])(
     BookController.mark_chapter_read

@@ -42,7 +42,7 @@ class CollectionsController:
     def get_collections_by_user(current_user, token):
         """Retorna collections do usuário. Para admin, inclui também as collections dos livros (visíveis só para admin)."""
 
-        is_admin = getattr(current_user, "role", None) == "admin"
+        is_admin = current_user.has_role("admin")
         result = CollectionService.get_collections_by_user(
             current_user._id, include_book_collections_for_admin=is_admin
         )
