@@ -2,12 +2,9 @@ from src.app.models.chat_model import ChatModel
 from flask import current_app
 from datetime import datetime, timezone
 import google.generativeai as genai
-from src.app.config import Config
+from src.app.services.settings_service import SettingsService
 import json
 import re
-
-
-genai.configure(api_key=Config.GENAI_API_KEY)
 
 
 class ChatService:
@@ -57,7 +54,7 @@ class ChatService:
         )
 
 
-        model = genai.GenerativeModel(Config.GENAI_MODEL, system_instruction=pre_prompt)
+        model = genai.GenerativeModel(SettingsService.get("GENAI_MODEL"), system_instruction=pre_prompt)
 
         chat = model.start_chat(history=history)
         response = chat.send_message(message)
@@ -130,7 +127,7 @@ class ChatService:
 
 
 
-        model = genai.GenerativeModel(Config.GENAI_MODEL)
+        model = genai.GenerativeModel(SettingsService.get("GENAI_MODEL"))
         response = model.generate_content(pre_prompt)
         
         json_str = re.sub(r'^```json|```$', '', response.text.strip(), flags=re.MULTILINE).strip()
@@ -168,7 +165,7 @@ class ChatService:
             format=format
         )
         
-        model = genai.GenerativeModel(Config.GENAI_MODEL)
+        model = genai.GenerativeModel(SettingsService.get("GENAI_MODEL"))
         response = model.generate_content(pre_prompt)
         
         json_str = re.sub(r'^```json|```$', '', response.text.strip(), flags=re.MULTILINE).strip()

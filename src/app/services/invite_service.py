@@ -3,6 +3,7 @@ from flask_mail import Message
 from src.app import mail
 from src.app.models.invite_model import InviteModel
 from src.app.models.user_model import UserModel
+from src.app.services.settings_service import SettingsService
 from src.app.config import Config
 
 
@@ -41,7 +42,7 @@ class InviteService:
                 msg = Message(
                     subject="Você foi convidado para o Memobelc!",
                     recipients=[email],
-                    sender=Config.MAIL_USERNAME
+                    sender=SettingsService.get("MAIL_USERNAME")
                 )
                 msg.body = f"""
                 Olá!

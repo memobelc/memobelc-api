@@ -1,5 +1,6 @@
 """Testes das rotas de autenticação."""
 import json
+import uuid
 import pytest
 
 
@@ -10,7 +11,7 @@ def new_user():
 
 def test_register_new_user(client, new_user):
     # Usar email único para evitar 409 de testes anteriores na mesma sessão
-    unique_user = {**new_user, "email": "unique_register@example.com"}
+    unique_user = {**new_user, "email": f"unique_register_{uuid.uuid4().hex[:8]}@example.com"}
     response = client.post(
         "/auth/register",
         data=json.dumps(unique_user),

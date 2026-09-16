@@ -6,7 +6,7 @@ from datetime import datetime
 
 from src.app.models.push_notification_model import PushNotificationModel
 
-ALLOWED_ROLES = ("user", "teacher", "admin", "affiliate")
+ALLOWED_ROLES = ("user", "teacher", "admin", "super_admin", "affiliate")
 ADDRESS_FIELDS = (
     "postal_code",
     "street",
@@ -57,6 +57,8 @@ class UserModel:
     @staticmethod
     def primary_role(roles):
         """Role primária para compatibilidade com o campo legado `role`."""
+        if "super_admin" in roles:
+            return "super_admin"
         if "admin" in roles:
             return "admin"
         if "teacher" in roles:

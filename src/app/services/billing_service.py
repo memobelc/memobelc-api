@@ -23,6 +23,7 @@ from src.app.provider.google_play import GooglePlay, GooglePlayError
 from src.app.services.coupon_service import CouponService
 from src.app.services.entitlement_service import EntitlementService
 from src.app.services.affiliate_service import AffiliateService
+from src.app.services.settings_service import SettingsService
 from src.app.utils.billing_utils import (
     ACCESS_STATUSES,
     ASAAS_PAID_STATUSES,
@@ -823,7 +824,7 @@ Se não lembrar, toque em "Esqueci minha senha"
             msg = Message(
                 subject="Compra confirmada e boas-vindas - Memobelc",
                 recipients=[user.email],
-                sender=Config.MAIL_DEFAULT_SENDER or Config.MAIL_USERNAME,
+                sender=SettingsService.mail_sender(),
             )
             msg.body = f"""
 Olá {user.name or ''}!
@@ -1347,7 +1348,7 @@ Equipe Memobelc
             msg = Message(
                 subject="Você recebeu acesso ao Memobelc",
                 recipients=[email],
-                sender=Config.MAIL_DEFAULT_SENDER or Config.MAIL_USERNAME,
+                sender=SettingsService.mail_sender(),
             )
             msg.body = f"""
 Olá {name or ''}!
