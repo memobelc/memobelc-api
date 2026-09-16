@@ -11,17 +11,34 @@ from src.app.utils.billing_utils import (
 )
 
 
+def _optional_float(value):
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _benefits(value):
+    return [str(item).strip() for item in (value or []) if str(item).strip()]
+
+
 class PlanModel:
     @staticmethod
     def create(data):
         cycle = data.get("cycle") or "MONTHLY"
         if cycle not in PLAN_CYCLES:
             raise ValueError(f"Invalid cycle: {cycle}")
+        installment_count = int(data.get("installment_count") or 0)
+        if installment_count < 0:
+            raise ValueError("installment_count must be >= 0")
         now = utcnow()
         doc = {
             "name": data.get("name"),
             "description": data.get("description") or "",
             "price": float(data.get("price") or 0),
+            "original_price": _optional_float(data.get("original_price")),
+            "installment_count": installment_count,
+            "benefits": _benefits(data.get("benefits")),
+            "badge": (data.get("badge") or "").strip(),
             "currency": data.get("currency") or "BRL",
             "cycle": cycle,
             "trial_days": int(data.get("trial_days") or 0),
@@ -58,6 +75,17 @@ class PlanModel:
                 updates[field] = data[field]
         if "price" in data:
             updates["price"] = float(data["price"])
+        if "original_price" in data:
+            updates["original_price"] = _optional_float(data["original_price"])
+        if "installment_count" in data:
+            installment_count = int(data["installment_count"] or 0)
+            if installment_count < 0:
+                raise ValueError("installment_count must be >= 0")
+            updates["installment_count"] = installment_count
+        if "benefits" in data:
+            updates["benefits"] = _benefits(data["benefits"])
+        if "badge" in data:
+            updates["badge"] = (data["badge"] or "").strip()
         if "trial_days" in data:
             updates["trial_days"] = int(data["trial_days"] or 0)
         if "cycle" in data:

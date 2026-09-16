@@ -1433,11 +1433,60 @@
               "trial_days": { "type": "integer" },
               "included_service_keys": { "type": "array", "items": { "type": "string" } },
               "included_book_ids": { "type": "array", "items": { "type": "string" } },
-              "google_play_product_id": { "type": "string" }
+              "google_play_product_id": { "type": "string" },
+              "original_price": { "type": "number" },
+              "installment_count": { "type": "integer" },
+              "benefits": { "type": "array", "items": { "type": "string" } },
+              "badge": { "type": "string" },
+              "is_active": { "type": "boolean" },
+              "is_public": { "type": "boolean" }
             }
           }
         }],
         "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/plans/admin/{plan_id}": {
+      "put": {
+        "tags": ["Plans"],
+        "summary": "Atualizar plano (admin), inclusive desativar/reativar",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "plan_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "price": { "type": "number" },
+                "original_price": { "type": "number" },
+                "installment_count": { "type": "integer" },
+                "benefits": { "type": "array", "items": { "type": "string" } },
+                "badge": { "type": "string" },
+                "cycle": { "type": "string" },
+                "trial_days": { "type": "integer" },
+                "included_service_keys": { "type": "array", "items": { "type": "string" } },
+                "is_active": { "type": "boolean" },
+                "is_public": { "type": "boolean" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Atualizado" }, "404": { "description": "Não encontrado" } }
+      },
+      "delete": {
+        "tags": ["Plans"],
+        "summary": "Excluir plano do banco (admin). Recusa se houver assinatura ativa.",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "plan_id", "in": "path", "required": true, "type": "string" }],
+        "responses": {
+          "200": { "description": "Excluído" },
+          "404": { "description": "Não encontrado" },
+          "409": { "description": "Há assinaturas ativas; desative o plano" }
+        }
       }
     },
     "/billing/checkout": {

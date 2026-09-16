@@ -65,17 +65,61 @@ def _create_plan(admin_headers, client, **overrides):
 def test_public_plans_and_admin_crud(client):
     suffix = uuid.uuid4().hex[:8]
     admin_headers, _ = _auth_user(client, f"admin_{suffix}@example.com", admin=True)
-    plan = _create_plan(admin_headers, client, name=f"Plan {suffix}")
+    plan = _create_plan(
+        admin_headers,
+        client,
+        name=f"Plan {suffix}",
+        original_price=997,
+        installment_count=12,
+        benefits=["Live sessions", "21-day protocol"],
+        badge="Launch price",
+    )
+    assert plan["original_price"] == 997
+    assert plan["installment_count"] == 12
+    assert plan["benefits"] == ["Live sessions", "21-day protocol"]
+    assert plan["badge"] == "Launch price"
     listed = client.get("/plans/public")
     assert listed.status_code == 200
-    assert any(item["_id"] == plan["_id"] for item in listed.get_json()["plans"])
+    public_plan = next(item for item in listed.get_json()["plans"] if item["_id"] == plan["_id"])
+    assert public_plan["badge"] == "Launch price"
     updated = client.put(
         f"/plans/admin/{plan['_id']}",
         headers=admin_headers,
-        data=json.dumps({"price": 79.9, "is_active": True}),
+        data=json.dumps({"price": 79.9, "is_active": True, "badge": "Promo"}),
     )
     assert updated.status_code == 200
     assert updated.get_json()["price"] == 79.9
+    assert updated.get_json()["badge"] == "Promo"
+    deactivated = client.put(
+        f"/plans/admin/{plan['_id']}",
+        headers=admin_headers,
+        data=json.dumps({"is_active": False, "is_public": False}),
+    )
+    assert deactivated.status_code == 200
+    hidden = client.get("/plans/public")
+    assert all(item["_id"] != plan["_id"] for item in hidden.get_json()["plans"])
+    deleted = client.delete(f"/plans/admin/{plan['_id']}", headers=admin_headers)
+    assert deleted.status_code == 200
+    assert PlanModel.get_by_id(plan["_id"]) is None
+
+
+def test_admin_cannot_delete_plan_with_active_subscription(client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_del_{suffix}@example.com", admin=True)
+    _, user_id = _auth_user(client, f"user_del_{suffix}@example.com")
+    plan = _create_plan(admin_headers, client, name=f"Busy {suffix}")
+    SubscriptionModel.create({
+        "user_id": user_id,
+        "plan_id": plan["_id"],
+        "provider": "asaas",
+        "status": "active",
+        "value": 49.9,
+        "provider_subscription_id": f"sub_del_{suffix}",
+    })
+    blocked = client.delete(f"/plans/admin/{plan['_id']}", headers=admin_headers)
+    assert blocked.status_code == 409
+    assert blocked.get_json()["code"] == "plan_has_active_subscriptions"
+    assert PlanModel.get_by_id(plan["_id"]) is not None
 
 
 def test_coupon_validation_rules(client):
