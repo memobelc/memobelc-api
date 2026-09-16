@@ -1,6 +1,6 @@
 # MemoBelc API
 
-API REST da plataforma MemoBelc: estudo com flashcards (coleções, baralhos e cartas), salas de aula, progresso, streak, livros, chat com IA, pagamentos (Stripe), convites e notificações.
+API REST da plataforma MemoBelc: estudo com flashcards (coleções, baralhos e cartas), salas de aula, progresso, streak, livros, chat com IA, pagamentos, convites e notificações.
 
 A aplicação é um serviço Flask com MongoDB, documentação interativa em Swagger e deploy pensado para Gunicorn + Docker.
 
@@ -30,7 +30,6 @@ A aplicação é um serviço Flask com MongoDB, documentação interativa em Swa
 | Gunicorn | Servidor WSGI (produção) |
 | Flask-Swagger-UI | Documentação em `/doc` |
 | Google Gemini | Chat e geração de cartas |
-| Stripe | Assinaturas e webhooks |
 | APScheduler | Lembretes diários de estudo |
 | MailHog (dev) | Captura de e-mails locais |
 
@@ -101,10 +100,7 @@ Todas as variáveis abaixo são **obrigatórias** para a aplicação subir (`src
 | `PORT` | Porta do servidor Flask local (ex.: `3005`) |
 | `FRONT_BASE_URL` | URL do frontend (links de e-mail, convites, etc.) |
 | `GENAI_API_KEY` | Chave da API Google Generative AI |
-| `GENAI_MODEL` | Modelo Gemini (ex.: `gemini-pro`) |
-| `STRIPE_SECRET_KEY` | Chave secreta Stripe (`sk_test_...` em dev) |
-| `STRIPE_WHSEC` | Segredo do webhook Stripe |
-| `PRICE_ID` | ID do preço/plano no Stripe |
+| `GENAI_MODEL` | Modelo Gemini (ex.: `gemin
 | `MAIL_SERVER` | Host SMTP (em dev com MailHog: `localhost`) |
 | `MAIL_PORT` | Porta SMTP (MailHog: `1025`; Gmail: `587`) |
 | `MAIL_USERNAME` | Usuário SMTP |
@@ -131,9 +127,6 @@ PORT=3005
 FRONT_BASE_URL=http://localhost:3000
 GENAI_API_KEY=
 GENAI_MODEL=gemini-pro
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WHSEC=whsec_...
-PRICE_ID=price_...
 MAIL_SERVER=localhost
 MAIL_PORT=1025
 MAIL_USERNAME=
@@ -220,7 +213,6 @@ Prefixos registrados em `src/app/routes/routes.py`:
 | `/video` | Vídeos |
 | `/progress` | Progresso de estudo |
 | `/chat` | Chat e geração de cartas via IA |
-| `/payment` | Stripe (`/payment_intent`, webhook) |
 | `/classroom` | Salas de aula |
 | `/notifications` | Notificações e tokens de push |
 | `/streak` | Sequência de estudos |
@@ -304,7 +296,6 @@ memobelc-api/
     │   ├── middlewares/   # JWT (token_required)
     │   ├── models/        # Modelos
     │   ├── proto/         # .proto e código gerado (pb/)
-    │   ├── provider/      # Stripe, e-mail
     │   ├── routes/        # Blueprints
     │   ├── services/      # Regras de negócio
     │   ├── static/        # swagger.json

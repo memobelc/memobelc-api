@@ -48,10 +48,7 @@ MONGO_URI=mongodb://seu_mongo_uri
 # API Keys
 GENAI_API_KEY=sua_chave_google_ai
 GENAI_MODEL=gemini-pro
-# Stripe (opcional, desativado; o checkout usa Asaas)
-STRIPE_SECRET_KEY=
-STRIPE_WHSEC=
-PRICE_ID=
+
 ASAAS_API_KEY=
 ASAAS_API_URL=https://api.asaas.com/v3
 ASAAS_WEBHOOK_TOKEN=

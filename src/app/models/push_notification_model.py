@@ -1,5 +1,4 @@
 from src.app import mongo
-from src.app.provider.stripe import Stripe
 import random
 from bson import ObjectId
 import string

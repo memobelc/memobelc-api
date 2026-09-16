@@ -678,14 +678,6 @@
         "responses": { "200": { "description": "Dados do pagamento" } }
       }
     },
-    "/payment/webhook": {
-      "post": {
-        "tags": ["Payment"],
-        "summary": "Webhook Stripe (uso interno)",
-        "parameters": [{ "name": "STRIPE_SIGNATURE", "in": "header", "required": true, "type": "string" }],
-        "responses": { "200": { "description": "Processado" } }
-      }
-    },
     "/classroom/create": {
       "post": {
         "tags": ["Classroom"],

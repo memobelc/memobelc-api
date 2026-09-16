@@ -415,38 +415,12 @@ class CourseController:
     def set_lesson_completed(current_user, token, lesson_id):
         data = request.get_json() or {}
         completed = data.get('completed', True)
-        # #region agent log
-        import json as _json, os as _os, time as _time
-        _log = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', '..', '..', 'debug-231f74.log'))
-        def _dbg(msg, extra, hid):
-            try:
-                with open(_log, 'a', encoding='utf-8') as _f:
-                    _f.write(_json.dumps({'sessionId': '231f74', 'location': 'course_controller.py:set_lesson_completed', 'message': msg, 'data': extra, 'timestamp': int(_time.time() * 1000), 'hypothesisId': hid, 'runId': 'pre-fix'}) + '\n')
-            except Exception:
-                pass
-        _dbg('endpoint hit', {'lessonId': str(lesson_id), 'completed': bool(completed)}, 'A,E')
-        # #endregion
-        try:
-            result, error = CourseService.set_lesson_completed(
-                lesson_id, str(current_user._id), bool(completed)
-            )
-        except Exception as exc:
-            # #region agent log
-            _dbg('service exception', {'error': str(exc), 'errorType': type(exc).__name__}, 'A,D')
-            # #endregion
-            return jsonify({'error': str(exc)}), 500
+        result, error = CourseService.set_lesson_completed(
+            lesson_id, str(current_user._id), bool(completed)
+        )
         if error:
-            # #region agent log
-            _dbg('service error', {'error': error}, 'A')
-            # #endregion
             return jsonify({'error': error}), 404
-        try:
-            return jsonify(result), 200
-        except Exception as exc:
-            # #region agent log
-            _dbg('jsonify failed', {'error': str(exc), 'errorType': type(exc).__name__, 'keys': list(result.keys()) if isinstance(result, dict) else None}, 'D')
-            # #endregion
-            return jsonify({'error': str(exc)}), 500
+        return jsonify(result), 200
 
     @staticmethod
     @token_required

@@ -15,9 +15,6 @@ class Config:
     PYTHONPATH = "src"
     MONGO_URI = _default_mongo
     SECRET_KEY = environ["SECRET_KEY"]
-    STRIPE_SECRET_KEY = environ.get("STRIPE_SECRET_KEY")
-    PRICE_ID = environ.get("PRICE_ID")
-    STRIPE_WHSEC = environ.get("STRIPE_WHSEC")
     ASAAS_API_KEY = environ.get("ASAAS_API_KEY")
     ASAAS_API_URL = environ.get("ASAAS_API_URL", "https://api-sandbox.asaas.com/v3")
     ASAAS_WEBHOOK_TOKEN = environ.get("ASAAS_WEBHOOK_TOKEN")
