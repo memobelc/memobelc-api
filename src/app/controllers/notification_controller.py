@@ -2,8 +2,24 @@ from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import BadRequest, Unauthorized
 
 from src.app.services.notification_service import NotificationService
+from src.app.models.notification.notification_group_model import NotificationGroupModel
 from src.app.models.push_notification_model import PushNotificationModel
 from src.app.middlewares.token_required import token_required
+
+
+def _require_admin(current_user):
+    if not current_user.has_role("admin"):
+        raise Unauthorized(description="User Invalid!")
+
+
+def _target_payload(data):
+    return {
+        "target_type": data.get("target_type"),
+        "user_ids": data.get("user_ids"),
+        "roles": data.get("roles"),
+        "classroom_id": data.get("classroom_id"),
+        "group_id": data.get("group_id"),
+    }
 
 
 class NotificationController:
@@ -77,8 +93,7 @@ class NotificationController:
     @token_required
     def send_daily(current_user, token):
         """Permite disparar manualmente as notificações diárias (restrito a admin)."""
-        if not current_user.has_role("admin"):
-            raise Unauthorized(description="User Invalid!")
+        _require_admin(current_user)
 
         result = NotificationService.send_daily_study_notifications()
         return jsonify(result), 200
@@ -86,48 +101,107 @@ class NotificationController:
     @staticmethod
     @token_required
     def teacher_custom(current_user, token):
-        """Professor envia notificação livre para uma turma."""
-        if not current_user.has_role("teacher"):
+        """Professor ou admin envia notificação livre para alunos de uma turma."""
+        is_admin = current_user.has_role("admin")
+        if not is_admin and not current_user.has_role("teacher"):
             raise Unauthorized(description="User Invalid!")
 
         data = request.get_json() or {}
         classroom_id = data.get("classroom_id")
         title = data.get("title")
         body = data.get("body")
+        student_ids = data.get("student_ids")
 
         if not all([classroom_id, title, body]):
             raise BadRequest(description="classroom_id, title e body são obrigatórios")
 
-        result = NotificationService.teacher_custom_notification(
-            teacher_id=str(current_user._id),
+        if student_ids is not None and not isinstance(student_ids, list):
+            raise BadRequest(description="student_ids deve ser uma lista")
+
+        result, status = NotificationService.teacher_custom_notification(
+            actor_id=str(current_user._id),
             classroom_id=classroom_id,
             title=title,
             body=body,
+            student_ids=student_ids,
+            is_admin=is_admin,
         )
-        return jsonify(result), 200
+        return jsonify(result), status
 
     @staticmethod
     @token_required
     def admin_custom(current_user, token):
-        """Admin envia notificação livre para um ou mais usuários (ou para todos se não passar lista)."""
-        if not current_user.has_role("admin"):
-            raise Unauthorized(description="User Invalid!")
+        """Admin envia notificação livre para um alvo (todos, usuários, papéis, turma ou grupo)."""
+        _require_admin(current_user)
 
         data = request.get_json() or {}
         title = data.get("title")
         body = data.get("body")
-        user_ids = data.get("user_ids")  # opcional lista de ids
 
         if not all([title, body]):
             raise BadRequest(description="title e body são obrigatórios")
 
-        result = NotificationService.admin_custom_notification(
-            admin_id=str(current_user._id),
-            title=title,
-            body=body,
-            user_ids=user_ids,
-        )
+        try:
+            result = NotificationService.admin_custom_notification(
+                admin_id=str(current_user._id),
+                title=title,
+                body=body,
+                **_target_payload(data),
+            )
+        except ValueError as exc:
+            raise BadRequest(description=str(exc))
         return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def admin_preview(current_user, token):
+        """Conta destinatários de um alvo admin sem enviar a notificação."""
+        _require_admin(current_user)
+        data = request.get_json() or {}
+        try:
+            result = NotificationService.preview_admin_targets(**_target_payload(data))
+        except ValueError as exc:
+            raise BadRequest(description=str(exc))
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def list_groups(current_user, token):
+        _require_admin(current_user)
+        return jsonify({"groups": NotificationGroupModel.list_groups()}), 200
+
+    @staticmethod
+    @token_required
+    def create_group(current_user, token):
+        _require_admin(current_user)
+        data = request.get_json() or {}
+        try:
+            group = NotificationGroupModel.create(data, created_by=str(current_user._id))
+        except ValueError as exc:
+            raise BadRequest(description=str(exc))
+        return jsonify(group), 201
+
+    @staticmethod
+    @token_required
+    def update_group(current_user, token, group_id):
+        _require_admin(current_user)
+        data = request.get_json() or {}
+        try:
+            group = NotificationGroupModel.update(group_id, data)
+        except ValueError as exc:
+            raise BadRequest(description=str(exc))
+        if not group:
+            return jsonify({"error": "Group not found"}), 404
+        return jsonify(group), 200
+
+    @staticmethod
+    @token_required
+    def delete_group(current_user, token, group_id):
+        _require_admin(current_user)
+        deleted = NotificationGroupModel.delete(group_id)
+        if not deleted:
+            return jsonify({"error": "Group not found"}), 404
+        return jsonify({"deleted": True}), 200
 
 
 notification_blueprint = Blueprint("notification_blueprint", __name__)
@@ -143,5 +217,8 @@ notification_blueprint.route("/settings", methods=["PATCH"])(NotificationControl
 notification_blueprint.route("/send_daily", methods=["POST"])(NotificationController.send_daily)
 notification_blueprint.route("/teacher/custom", methods=["POST"])(NotificationController.teacher_custom)
 notification_blueprint.route("/admin/custom", methods=["POST"])(NotificationController.admin_custom)
-
-
+notification_blueprint.route("/admin/preview", methods=["POST"])(NotificationController.admin_preview)
+notification_blueprint.route("/admin/groups", methods=["GET"])(NotificationController.list_groups)
+notification_blueprint.route("/admin/groups", methods=["POST"])(NotificationController.create_group)
+notification_blueprint.route("/admin/groups/<string:group_id>", methods=["PATCH"])(NotificationController.update_group)
+notification_blueprint.route("/admin/groups/<string:group_id>", methods=["DELETE"])(NotificationController.delete_group)

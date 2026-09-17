@@ -7,8 +7,9 @@ from flask_mail import Message
 
 from src.app import mail, mongo
 from src.app.models.notification.notification_model import NotificationModel
+from src.app.models.notification.notification_group_model import NotificationGroupModel
 from src.app.models.notification.user_notification_settings_model import UserSettingsModel
-from src.app.models.user_model import UserModel
+from src.app.models.user_model import UserModel, ALLOWED_ROLES
 from src.app.models.user_progress_model import UserProgressModel
 from src.app.models.classroom_model import ClassroomModel
 from src.app.models.deck_model import DeckModel
@@ -27,6 +28,9 @@ class NotificationService:
     TYPE_SUPPORT = "support"
     TYPE_AFFILIATE = "affiliate"
     TYPE_AFFILIATE_SALE = "affiliate_sales"
+
+    TARGET_TYPES = ("all", "users", "roles", "classroom", "group")
+    AUDIENCE_ROLES = tuple(role for role in ALLOWED_ROLES if role != "super_admin")
 
     # ---------- Preferências ----------
     @staticmethod
@@ -87,22 +91,6 @@ Equipe Memobelc
         extra_data: Optional[Dict[str, Any]] = None,
     ):
         if not NotificationService._should_notify(user_id, notification_type):
-            # #region agent log
-            try:
-                import json
-                import time
-                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({
-                        "sessionId": "75e675",
-                        "hypothesisId": "D",
-                        "location": "notification_service.py:_create_and_push",
-                        "message": "notify skipped by settings",
-                        "data": {"notification_type": notification_type, "has_user_id": bool(user_id)},
-                        "timestamp": int(time.time() * 1000),
-                    }, default=str) + "\n")
-            except Exception:
-                pass
-            # #endregion
             return
 
         data = {"title": title, "body": body}
@@ -110,27 +98,6 @@ Equipe Memobelc
             data.update(extra_data)
 
         NotificationModel.create(user_id=user_id, notification_type=notification_type, data=data)
-        # #region agent log
-        if notification_type in ("affiliate_sales", "affiliate"):
-            try:
-                import json
-                import time
-                with open(r"e:\Usuários\cleby\Music\MEMOBELC\memobelc-api\debug-75e675.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({
-                        "sessionId": "75e675",
-                        "hypothesisId": "D",
-                        "location": "notification_service.py:_create_and_push",
-                        "message": "notification created",
-                        "data": {
-                            "notification_type": notification_type,
-                            "has_user_id": bool(user_id),
-                            "email": NotificationService._should_email(user_id, notification_type),
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }, default=str) + "\n")
-            except Exception:
-                pass
-        # #endregion
         PushNotificationService.send_to_user(user_id=user_id, title=title, body=body, data=extra_data or {})
 
         if NotificationService._should_email(user_id, notification_type):
@@ -253,45 +220,197 @@ Equipe Memobelc
                 )
 
     @staticmethod
-    def teacher_custom_notification(teacher_id: str, classroom_id: str, title: str, body: str):
-        """Professor envia uma notificação de texto livre para todos os alunos da turma."""
+    def _classroom_student_ids(classroom: Dict[str, Any]) -> List[str]:
+        ids: List[str] = []
+        seen = set()
+        for student in classroom.get("students") or []:
+            if isinstance(student, dict):
+                uid = str(student.get("_id") or "")
+            else:
+                uid = str(student or "")
+            if not uid or uid in seen:
+                continue
+            seen.add(uid)
+            ids.append(uid)
+        return ids
+
+    @staticmethod
+    def _confirmed_user_ids(user_ids: List[str]) -> List[str]:
+        object_ids = []
+        ordered: List[str] = []
+        seen = set()
+        for uid in user_ids or []:
+            sid = str(uid or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            ordered.append(sid)
+            try:
+                object_ids.append(ObjectId(sid))
+            except Exception:
+                continue
+        if not object_ids:
+            return []
+        found = {
+            str(user["_id"])
+            for user in mongo.db.users.find(
+                {"_id": {"$in": object_ids}, "is_confirmed": True},
+                {"_id": 1},
+            )
+        }
+        return [uid for uid in ordered if uid in found]
+
+    @staticmethod
+    def resolve_admin_targets(
+        target_type: Optional[str] = None,
+        user_ids: Optional[List[str]] = None,
+        roles: Optional[List[str]] = None,
+        classroom_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ) -> List[str]:
+        resolved_type = (target_type or "").strip() or ("users" if user_ids else "all")
+        if resolved_type not in NotificationService.TARGET_TYPES:
+            raise ValueError("Invalid target_type")
+
+        if resolved_type == "all":
+            return [
+                str(user["_id"])
+                for user in mongo.db.users.find({"is_confirmed": True}, {"_id": 1})
+            ]
+
+        if resolved_type == "users":
+            if not user_ids:
+                raise ValueError("user_ids is required")
+            return NotificationService._confirmed_user_ids([str(uid) for uid in user_ids])
+
+        if resolved_type == "roles":
+            if not roles:
+                raise ValueError("roles is required")
+            valid_roles = [
+                role for role in roles if role in NotificationService.AUDIENCE_ROLES
+            ]
+            if not valid_roles:
+                raise ValueError("Invalid roles")
+            return list(
+                {
+                    str(user["_id"])
+                    for user in mongo.db.users.find(
+                        {
+                            "is_confirmed": True,
+                            "$or": [
+                                {"role": {"$in": valid_roles}},
+                                {"roles": {"$in": valid_roles}},
+                            ],
+                        },
+                        {"_id": 1},
+                    )
+                }
+            )
+
+        if resolved_type == "classroom":
+            if not classroom_id:
+                raise ValueError("classroom_id is required")
+            classroom = ClassroomModel.get_by_id(classroom_id)
+            if not classroom:
+                raise ValueError("Classroom not found")
+            return NotificationService._confirmed_user_ids(
+                NotificationService._classroom_student_ids(classroom)
+            )
+
+        if resolved_type == "group":
+            if not group_id:
+                raise ValueError("group_id is required")
+            group = NotificationGroupModel.get_by_id(group_id)
+            if not group:
+                raise ValueError("Group not found")
+            return NotificationService._confirmed_user_ids(group.get("user_ids") or [])
+
+        raise ValueError("Invalid target_type")
+
+    @staticmethod
+    def preview_admin_targets(
+        target_type: Optional[str] = None,
+        user_ids: Optional[List[str]] = None,
+        roles: Optional[List[str]] = None,
+        classroom_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        targets = NotificationService.resolve_admin_targets(
+            target_type=target_type,
+            user_ids=user_ids,
+            roles=roles,
+            classroom_id=classroom_id,
+            group_id=group_id,
+        )
+        return {"count": len(targets)}
+
+    @staticmethod
+    def teacher_custom_notification(
+        actor_id: str,
+        classroom_id: str,
+        title: str,
+        body: str,
+        student_ids: Optional[List[str]] = None,
+        is_admin: bool = False,
+    ):
+        """Professor/admin envia notificação livre para alunos da turma."""
         classroom = ClassroomModel.get_by_id(classroom_id)
         if not classroom:
-            return {"error": "Classroom not found"}
+            return {"error": "Classroom not found"}, 404
 
-        students = classroom.get("students", [])
-        for student in students:
-            # no to_dict de ClassroomModel, students são dicionários com name/email
-            # portanto precisamos buscar o user_id via email
-            email = student.get("email")
-            if not email:
-                continue
-            user = UserModel.find_by_email(email)
-            if not user:
-                continue
+        is_owner = str(classroom.get("teacher") or "") == str(actor_id)
+        if not is_admin and not is_owner:
+            return {"error": "Unauthorized"}, 403
 
+        classroom_student_ids = NotificationService._classroom_student_ids(classroom)
+        if student_ids is not None:
+            requested = [str(sid) for sid in student_ids if str(sid or "").strip()]
+            if not requested:
+                return {"error": "student_ids is required"}, 400
+            invalid = [sid for sid in requested if sid not in classroom_student_ids]
+            if invalid:
+                return {"error": "Some students are not in this classroom"}, 400
+            target_ids = requested
+        else:
+            target_ids = classroom_student_ids
+
+        for uid in target_ids:
             NotificationService._create_and_push(
-                user_id=user._id,
+                user_id=uid,
                 notification_type=NotificationService.TYPE_TEACHER_CUSTOM,
                 title=title,
                 body=body,
-                extra_data={"classroom_id": classroom_id, "from_teacher_id": teacher_id},
+                extra_data={"classroom_id": classroom_id, "from_teacher_id": actor_id},
             )
 
-        return {"sent_to": len(students)}
+        return {"sent_to": len(target_ids)}, 200
 
     @staticmethod
-    def admin_custom_notification(admin_id: str, title: str, body: str, user_ids: Optional[List[str]] = None):
-        """Admin envia notificação de texto livre.
-
-        - Se user_ids for informado: envia apenas para esses usuários.
-        - Caso contrário: envia para todos usuários confirmados.
-        """
-        if user_ids:
-            target_users = [str(uid) for uid in user_ids]
-        else:
-            cursor = mongo.db.users.find({"is_confirmed": True})
-            target_users = [str(u["_id"]) for u in cursor]
+    def admin_custom_notification(
+        admin_id: str,
+        title: str,
+        body: str,
+        user_ids: Optional[List[str]] = None,
+        target_type: Optional[str] = None,
+        roles: Optional[List[str]] = None,
+        classroom_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ):
+        """Admin envia notificação livre para um alvo (todos, usuários, papéis, turma ou grupo)."""
+        target_users = NotificationService.resolve_admin_targets(
+            target_type=target_type,
+            user_ids=user_ids,
+            roles=roles,
+            classroom_id=classroom_id,
+            group_id=group_id,
+        )
+        extra_data: Dict[str, Any] = {"from_admin_id": admin_id}
+        resolved_type = (target_type or "").strip() or ("users" if user_ids else "all")
+        extra_data["target_type"] = resolved_type
+        if classroom_id:
+            extra_data["classroom_id"] = classroom_id
+        if group_id:
+            extra_data["group_id"] = group_id
 
         for uid in target_users:
             NotificationService._create_and_push(
@@ -299,7 +418,7 @@ Equipe Memobelc
                 notification_type=NotificationService.TYPE_ADMIN_CUSTOM,
                 title=title,
                 body=body,
-                extra_data={"from_admin_id": admin_id},
+                extra_data=extra_data,
             )
 
         return {"sent_to": len(target_users)}

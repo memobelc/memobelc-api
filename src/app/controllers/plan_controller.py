@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 from src.app.middlewares.token_required import token_required
 from src.app.models.billing_support_model import AuditLogModel
 from src.app.models.plan_model import PlanModel
+from src.app.models.subscription_model import SubscriptionModel
 from src.app.utils.billing_utils import PLAN_CYCLES, SERVICE_KEYS
 
 
@@ -69,11 +70,19 @@ class PlanController:
     def delete_plan(current_user, token, plan_id):
         if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
-        plan = PlanModel.soft_delete(plan_id)
+        plan = PlanModel.get_by_id(plan_id)
         if not plan:
             return jsonify({"error": "Plan not found"}), 404
-        AuditLogModel.record(current_user._id, "deactivate", "plan", plan_id, None, plan)
-        return jsonify({"message": "Plan deactivated", "plan": plan}), 200
+        blocking = SubscriptionModel.count_blocking_for_plan(plan_id)
+        if blocking:
+            return jsonify({
+                "error": "Cannot delete plan with active subscriptions. Deactivate it instead.",
+                "code": "plan_has_active_subscriptions",
+                "count": blocking,
+            }), 409
+        PlanModel.delete(plan_id)
+        AuditLogModel.record(current_user._id, "delete", "plan", plan_id, plan, None)
+        return jsonify({"message": "Plan deleted"}), 200
 
 
 plan_blueprint = Blueprint("plan_blueprint", __name__)

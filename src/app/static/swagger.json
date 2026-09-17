@@ -911,7 +911,7 @@
     "/notifications/teacher/custom": {
       "post": {
         "tags": ["Notifications"],
-        "summary": "Notificação customizada para turma (professor)",
+        "summary": "Notificação customizada para turma (professor ou admin)",
         "security": [{ "Bearer": [] }],
         "parameters": [
           {
@@ -924,12 +924,13 @@
               "properties": {
                 "classroom_id": { "type": "string" },
                 "title": { "type": "string" },
-                "body": { "type": "string" }
+                "body": { "type": "string" },
+                "student_ids": { "type": "array", "items": { "type": "string" }, "description": "Se omitido, envia para todos os alunos da turma" }
               }
             }
           }
         ],
-        "responses": { "200": { "description": "Enviada" }, "401": { "description": "Apenas professor" } }
+        "responses": { "200": { "description": "Enviada" }, "401": { "description": "Apenas professor ou admin" }, "403": { "description": "Sem permissão nesta turma" } }
       }
     },
     "/notifications/admin/custom": {
@@ -948,12 +949,103 @@
               "properties": {
                 "title": { "type": "string" },
                 "body": { "type": "string" },
-                "user_ids": { "type": "array", "items": { "type": "string" } }
+                "target_type": { "type": "string", "enum": ["all", "users", "roles", "classroom", "group"] },
+                "user_ids": { "type": "array", "items": { "type": "string" } },
+                "roles": { "type": "array", "items": { "type": "string" } },
+                "classroom_id": { "type": "string" },
+                "group_id": { "type": "string" }
               }
             }
           }
         ],
         "responses": { "200": { "description": "Enviada" }, "401": { "description": "Apenas admin" } }
+      }
+    },
+    "/notifications/admin/preview": {
+      "post": {
+        "tags": ["Notifications"],
+        "summary": "Prévia da quantidade de destinatários (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "target_type": { "type": "string", "enum": ["all", "users", "roles", "classroom", "group"] },
+                "user_ids": { "type": "array", "items": { "type": "string" } },
+                "roles": { "type": "array", "items": { "type": "string" } },
+                "classroom_id": { "type": "string" },
+                "group_id": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "count" }, "401": { "description": "Apenas admin" } }
+      }
+    },
+    "/notifications/admin/groups": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Listar grupos de notificação (admin)",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Lista de grupos" }, "401": { "description": "Apenas admin" } }
+      },
+      "post": {
+        "tags": ["Notifications"],
+        "summary": "Criar grupo de notificação (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "user_ids": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        ],
+        "responses": { "201": { "description": "Grupo criado" }, "401": { "description": "Apenas admin" } }
+      }
+    },
+    "/notifications/admin/groups/{group_id}": {
+      "patch": {
+        "tags": ["Notifications"],
+        "summary": "Atualizar grupo de notificação (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "group_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "user_ids": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Grupo atualizado" }, "404": { "description": "Grupo não encontrado" } }
+      },
+      "delete": {
+        "tags": ["Notifications"],
+        "summary": "Excluir grupo de notificação (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "group_id", "in": "path", "required": true, "type": "string" }
+        ],
+        "responses": { "200": { "description": "Grupo excluído" }, "404": { "description": "Grupo não encontrado" } }
       }
     },
     "/streak/get": {
@@ -1341,11 +1433,60 @@
               "trial_days": { "type": "integer" },
               "included_service_keys": { "type": "array", "items": { "type": "string" } },
               "included_book_ids": { "type": "array", "items": { "type": "string" } },
-              "google_play_product_id": { "type": "string" }
+              "google_play_product_id": { "type": "string" },
+              "original_price": { "type": "number" },
+              "installment_count": { "type": "integer" },
+              "benefits": { "type": "array", "items": { "type": "string" } },
+              "badge": { "type": "string" },
+              "is_active": { "type": "boolean" },
+              "is_public": { "type": "boolean" }
             }
           }
         }],
         "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/plans/admin/{plan_id}": {
+      "put": {
+        "tags": ["Plans"],
+        "summary": "Atualizar plano (admin), inclusive desativar/reativar",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "plan_id", "in": "path", "required": true, "type": "string" },
+          {
+            "name": "body",
+            "in": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "price": { "type": "number" },
+                "original_price": { "type": "number" },
+                "installment_count": { "type": "integer" },
+                "benefits": { "type": "array", "items": { "type": "string" } },
+                "badge": { "type": "string" },
+                "cycle": { "type": "string" },
+                "trial_days": { "type": "integer" },
+                "included_service_keys": { "type": "array", "items": { "type": "string" } },
+                "is_active": { "type": "boolean" },
+                "is_public": { "type": "boolean" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Atualizado" }, "404": { "description": "Não encontrado" } }
+      },
+      "delete": {
+        "tags": ["Plans"],
+        "summary": "Excluir plano do banco (admin). Recusa se houver assinatura ativa.",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "plan_id", "in": "path", "required": true, "type": "string" }],
+        "responses": {
+          "200": { "description": "Excluído" },
+          "404": { "description": "Não encontrado" },
+          "409": { "description": "Há assinaturas ativas; desative o plano" }
+        }
       }
     },
     "/billing/checkout": {

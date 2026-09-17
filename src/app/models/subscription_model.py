@@ -5,6 +5,7 @@ import uuid
 from src.app import mongo
 from src.app.utils.billing_utils import (
     ACCESS_STATUSES,
+    GRACE_ELIGIBLE_STATUSES,
     PAID_ACTIVE_STATUSES,
     serialize_doc,
     to_object_id,
@@ -99,6 +100,15 @@ class SubscriptionModel:
                 "provider_subscription_id": provider_subscription_id,
             })
         )
+
+    @staticmethod
+    def count_blocking_for_plan(plan_id):
+        if not plan_id:
+            return 0
+        return mongo.db.subscriptions.count_documents({
+            "plan_id": str(plan_id),
+            "status": {"$in": list(GRACE_ELIGIBLE_STATUSES)},
+        })
 
     @staticmethod
     def get_active_for_user(user_id):
