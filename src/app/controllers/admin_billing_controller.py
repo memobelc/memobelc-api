@@ -1,14 +1,19 @@
 """Entitlements and admin billing management."""
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from src.app.middlewares.token_required import token_required
 from src.app.models.billing_support_model import AuditLogModel, ExternalSaleModel
 from src.app.models.classroom_model import ClassroomModel
 from src.app.models.entitlement_model import EntitlementModel
-from src.app.models.payment_model import PaymentModel
 from src.app.models.service_access_model import ServiceAccessModel
-from src.app.models.subscription_model import SubscriptionModel
+from src.app.services.admin_billing_query import (
+    AdminBillingQuery,
+    flatten_payment,
+    flatten_subscription,
+    to_csv,
+    to_xlsx,
+)
 from src.app.services.billing_service import BillingService
 from src.app.services.classroom_service import ClassroomService
 from src.app.services.entitlement_service import EntitlementService
@@ -22,36 +27,120 @@ class EntitlementController:
         return jsonify(EntitlementService.resolve(current_user)), 200
 
 
+def _export_response(body, filename, fmt):
+    if fmt == "xlsx":
+        return Response(
+            body,
+            mimetype="application/vnd.ms-excel",
+            headers={"Content-Disposition": f"attachment; filename={filename}.xls"},
+        )
+    return Response(
+        body,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}.csv"},
+    )
+
+
 class AdminBillingController:
     @staticmethod
     @token_required
     def list_subscriptions(current_user, token):
         if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
-        items, total = SubscriptionModel.query(request.args, skip=request.args.get("skip", 0), limit=request.args.get("limit", 50))
+        items, total = AdminBillingQuery.list_subscriptions(
+            request.args,
+            skip=request.args.get("skip", 0),
+            limit=request.args.get("limit", 50),
+            sort=request.args.get("sort"),
+        )
         return jsonify({"subscriptions": items, "total": total}), 200
+
+    @staticmethod
+    @token_required
+    def export_subscriptions(current_user, token):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        items, _total = AdminBillingQuery.list_subscriptions(
+            request.args, sort=request.args.get("sort"), for_export=True,
+        )
+        rows = [flatten_subscription(item) for item in items]
+        headers = list(rows[0].keys()) if rows else [
+            "user_name", "user_email", "plan_name", "status", "value", "subscription_id",
+        ]
+        fmt = (request.args.get("format") or "csv").lower()
+        body = to_xlsx(rows, headers) if fmt == "xlsx" else to_csv(rows, headers)
+        return _export_response(body, "subscriptions", fmt)
 
     @staticmethod
     @token_required
     def get_subscription(current_user, token, subscription_id):
         if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
-        subscription = SubscriptionModel.get_by_id(subscription_id)
-        if not subscription:
+        enriched = AdminBillingQuery.get_subscription(subscription_id)
+        if not enriched:
             return jsonify({"error": "Subscription not found"}), 404
-        payments = [
-            item for item in PaymentModel.list_for_user(subscription["user_id"])
-            if item.get("subscription_id") == subscription_id
-        ]
-        return jsonify({"subscription": subscription, "payments": payments}), 200
+        payments, _total = AdminBillingQuery.list_payments(
+            {"subscription_id": subscription_id}, skip=0, limit=200,
+        )
+        return jsonify({"subscription": enriched, "payments": payments}), 200
 
     @staticmethod
     @token_required
     def list_payments(current_user, token):
         if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
-        items, total = PaymentModel.query(request.args, skip=request.args.get("skip", 0), limit=request.args.get("limit", 50))
+        items, total = AdminBillingQuery.list_payments(
+            request.args,
+            skip=request.args.get("skip", 0),
+            limit=request.args.get("limit", 50),
+            sort=request.args.get("sort"),
+        )
         return jsonify({"payments": items, "total": total}), 200
+
+    @staticmethod
+    @token_required
+    def export_payments(current_user, token):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        items, _total = AdminBillingQuery.list_payments(
+            request.args, sort=request.args.get("sort"), for_export=True,
+        )
+        rows = [flatten_payment(item) for item in items]
+        headers = list(rows[0].keys()) if rows else [
+            "user_name", "user_email", "amount", "status", "transaction_id",
+        ]
+        fmt = (request.args.get("format") or "csv").lower()
+        body = to_xlsx(rows, headers) if fmt == "xlsx" else to_csv(rows, headers)
+        return _export_response(body, "payments", fmt)
+
+    @staticmethod
+    @token_required
+    def summary(current_user, token):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        return jsonify(AdminBillingQuery.summary()), 200
+
+    @staticmethod
+    @token_required
+    def list_grants(current_user, token):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        items, total = AdminBillingQuery.list_grants(
+            request.args,
+            skip=request.args.get("skip", 0),
+            limit=request.args.get("limit", 50),
+        )
+        return jsonify({"grants": items, "total": total}), 200
+
+    @staticmethod
+    @token_required
+    def user_preview(current_user, token, user_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        preview = AdminBillingQuery.user_billing_preview(user_id)
+        if not preview:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(preview), 200
 
     @staticmethod
     @token_required
@@ -172,12 +261,17 @@ entitlement_blueprint = Blueprint("entitlement_blueprint", __name__)
 entitlement_blueprint.route("/me", methods=["GET"])(EntitlementController.me)
 
 admin_billing_blueprint = Blueprint("admin_billing_blueprint", __name__)
+admin_billing_blueprint.route("/summary", methods=["GET"])(AdminBillingController.summary)
+admin_billing_blueprint.route("/subscriptions/export", methods=["GET"])(AdminBillingController.export_subscriptions)
 admin_billing_blueprint.route("/subscriptions", methods=["GET"])(AdminBillingController.list_subscriptions)
 admin_billing_blueprint.route("/subscriptions/<string:subscription_id>", methods=["GET"])(AdminBillingController.get_subscription)
 admin_billing_blueprint.route("/subscriptions/<string:subscription_id>/action", methods=["POST"])(AdminBillingController.subscription_action)
+admin_billing_blueprint.route("/payments/export", methods=["GET"])(AdminBillingController.export_payments)
 admin_billing_blueprint.route("/payments", methods=["GET"])(AdminBillingController.list_payments)
+admin_billing_blueprint.route("/grants", methods=["GET"])(AdminBillingController.list_grants)
 admin_billing_blueprint.route("/grants", methods=["POST"])(AdminBillingController.grant)
 admin_billing_blueprint.route("/grants/<string:entitlement_id>", methods=["DELETE"])(AdminBillingController.revoke)
+admin_billing_blueprint.route("/users/<string:user_id>/preview", methods=["GET"])(AdminBillingController.user_preview)
 admin_billing_blueprint.route("/users/<string:user_id>/entitlements", methods=["GET"])(AdminBillingController.user_entitlements)
 admin_billing_blueprint.route("/external-sales", methods=["GET"])(AdminBillingController.list_external_sales)
 admin_billing_blueprint.route("/external-sales", methods=["POST"])(AdminBillingController.external_sale)

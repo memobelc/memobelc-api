@@ -12,6 +12,7 @@ from src.app.utils.billing_utils import (
     utcnow,
     parse_datetime,
 )
+from datetime import timedelta
 
 
 class SubscriptionModel:
@@ -147,14 +148,22 @@ class SubscriptionModel:
             query["status"] = filters["status"]
         if filters.get("provider"):
             query["provider"] = filters["provider"]
+        if filters.get("payment_method"):
+            query["payment_method"] = filters["payment_method"]
         start = parse_datetime(filters.get("date_from"))
         end = parse_datetime(filters.get("date_to"))
+        date_field = filters.get("date_field") or "created_at"
         if start or end:
-            query["created_at"] = {}
+            query[date_field] = {}
             if start:
-                query["created_at"]["$gte"] = start
+                query[date_field]["$gte"] = start
             if end:
-                query["created_at"]["$lte"] = end
+                query[date_field]["$lte"] = end
+        expiring = filters.get("expiring_in_days")
+        if expiring not in (None, ""):
+            days = int(expiring)
+            now = utcnow()
+            query["current_period_end"] = {"$gte": now, "$lte": now + timedelta(days=days)}
         cursor = mongo.db.subscriptions.find(query).sort("created_at", -1).skip(int(skip)).limit(int(limit))
         total = mongo.db.subscriptions.count_documents(query)
         return [serialize_doc(doc) for doc in cursor], total

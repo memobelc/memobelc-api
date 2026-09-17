@@ -915,3 +915,154 @@ def test_public_checkout_links_existing_profile_without_password(mock_pay, mock_
         content_type="application/json",
     )
     assert sync.status_code == 200
+
+
+def test_admin_billing_console_enrichment_summary_grant_export(client):
+    from src.app.models.payment_model import PaymentModel
+    from src.app.services.admin_billing_query import map_asaas_failure
+
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_bill_{suffix}@example.com", admin=True, name="Admin Billing")
+    user_headers, user_id = _auth_user(client, f"user_bill_{suffix}@example.com", name="Ana Billing")
+    plan = _create_plan(admin_headers, client, name=f"Console {suffix}", price=120)
+    period_end = utcnow() + timedelta(days=12)
+    subscription = SubscriptionModel.create({
+        "user_id": user_id,
+        "plan_id": plan["_id"],
+        "provider": "asaas",
+        "status": "active",
+        "value": 120,
+        "billing_cycle": "MONTHLY",
+        "payment_method": "CREDIT_CARD",
+        "current_period_end": period_end,
+        "next_due_date": period_end,
+        "provider_subscription_id": f"sub_console_{suffix}",
+    })
+    PaymentModel.create({
+        "user_id": user_id,
+        "provider": "asaas",
+        "status": "confirmed",
+        "amount": 120,
+        "product_type": "plan",
+        "product_id": plan["_id"],
+        "subscription_id": subscription["_id"],
+        "payment_method": "CREDIT_CARD",
+        "paid_at": utcnow(),
+    })
+    PaymentModel.create({
+        "user_id": user_id,
+        "provider": "asaas",
+        "status": "refused",
+        "amount": 120,
+        "product_type": "plan",
+        "product_id": plan["_id"],
+        "subscription_id": subscription["_id"],
+        "payment_method": "CREDIT_CARD",
+        "failure_reason": "card_refused",
+        "failure_code": "DECLINED",
+    })
+
+    listed = client.get(
+        f"/admin/billing/subscriptions?q=Ana&plan_id={plan['_id']}&status=active",
+        headers=admin_headers,
+    )
+    assert listed.status_code == 200, listed.get_json()
+    item = listed.get_json()["subscriptions"][0]
+    assert item["user"]["name"] == "Ana Billing"
+    assert item["plan"]["name"] == f"Console {suffix}"
+    assert item["days_remaining"] is not None
+    assert item["last_payment"]["status"] == "confirmed"
+
+    summary = client.get("/admin/billing/summary", headers=admin_headers)
+    assert summary.status_code == 200
+    body = summary.get_json()
+    assert body["active_subscriptions"] >= 1
+    assert body["mrr"] >= 120
+    assert body["arr"] == round(body["mrr"] * 12, 2)
+    assert body["payments_failed_today"] >= 1
+
+    failed = client.get("/admin/billing/payments?failed_only=true", headers=admin_headers)
+    assert failed.status_code == 200
+    assert any(pay["status"] == "refused" for pay in failed.get_json()["payments"])
+
+    csv_res = client.get("/admin/billing/subscriptions/export?format=csv", headers=admin_headers)
+    assert csv_res.status_code == 200
+    assert csv_res.data.startswith(b"\xef\xbb\xbf")
+    assert b"Ana Billing" in csv_res.data
+    xlsx_res = client.get("/admin/billing/payments/export?format=xlsx", headers=admin_headers)
+    assert xlsx_res.status_code == 200
+    assert b"Workbook" in xlsx_res.data
+
+    granted = client.post(
+        "/admin/billing/grants",
+        headers=admin_headers,
+        data=json.dumps({
+            "user_id": user_id,
+            "type": "plan",
+            "resource_id": plan["_id"],
+            "duration_days": 10,
+            "reason": "support",
+            "notes": "vip",
+        }),
+    )
+    assert granted.status_code == 200, granted.get_json()
+    grant_sub = granted.get_json()["grant"]
+    assert grant_sub.get("current_period_end")
+    entitlements = EntitlementModel.list_active_for_user(user_id)
+    manual = next(item for item in entitlements if item.get("source") == "manual" and item.get("type") == "plan")
+    assert manual.get("expires_at")
+    assert manual.get("reason") == "support"
+    grants = client.get("/admin/billing/grants", headers=admin_headers)
+    assert grants.status_code == 200
+    assert any(item["_id"] == manual["_id"] for item in grants.get_json()["grants"])
+
+    preview = client.get(f"/admin/billing/users/{user_id}/preview", headers=admin_headers)
+    assert preview.status_code == 200
+    assert preview.get_json()["email"] == f"user_bill_{suffix}@example.com"
+
+    admin_plans = client.get("/plans/admin", headers=admin_headers)
+    metric = next(item for item in admin_plans.get_json()["plans"] if item["_id"] == plan["_id"])
+    assert metric["subscriber_count"] >= 1
+    insights = client.get(f"/plans/admin/{plan['_id']}/insights", headers=admin_headers)
+    assert insights.status_code == 200
+    assert insights.get_json()["subscriber_count"] >= 1
+    assert "audit" in insights.get_json()
+
+    reason, code = map_asaas_failure({"lastError": "insufficient funds", "status": "REFUSED"})
+    assert reason == "insufficient_funds"
+    assert code
+
+
+def test_asaas_refused_webhook_stores_failure_reason(client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_fail_{suffix}@example.com", admin=True)
+    _, user_id = _auth_user(client, f"user_fail_{suffix}@example.com")
+    plan = _create_plan(admin_headers, client, name=f"Fail {suffix}")
+    subscription = SubscriptionModel.create({
+        "user_id": user_id,
+        "plan_id": plan["_id"],
+        "provider": "asaas",
+        "status": "pending",
+        "value": 49.9,
+        "provider_subscription_id": f"sub_fail_{suffix}",
+    })
+    response = client.post("/billing/asaas/webhook", json={
+        "id": f"evt_fail_{suffix}",
+        "event": "PAYMENT_REFUSED",
+        "payment": {
+            "id": f"pay_fail_{suffix}",
+            "subscription": f"sub_fail_{suffix}",
+            "value": 49.9,
+            "billingType": "CREDIT_CARD",
+            "lastError": "Card declined by issuer",
+            "status": "REFUSED",
+        },
+    })
+    assert response.status_code == 200
+    payment = mongo.db.payments.find_one({"provider_payment_id": f"pay_fail_{suffix}"})
+    assert payment is not None
+    assert payment["status"] == "refused"
+    assert payment["failure_reason"] == "card_refused"
+    assert payment.get("attempt_count") >= 1
+    updated = SubscriptionModel.get_by_id(subscription["_id"])
+    assert updated is not None

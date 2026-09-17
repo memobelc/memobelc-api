@@ -6,6 +6,7 @@ from src.app.middlewares.token_required import token_required
 from src.app.models.billing_support_model import AuditLogModel
 from src.app.models.plan_model import PlanModel
 from src.app.models.subscription_model import SubscriptionModel
+from src.app.services.admin_billing_query import AdminBillingQuery
 from src.app.utils.billing_utils import PLAN_CYCLES, SERVICE_KEYS
 
 
@@ -19,8 +20,9 @@ class PlanController:
     def list_admin(current_user, token):
         if not current_user.has_role("admin"):
             return jsonify({"error": "Unauthorized"}), 403
+        plans = AdminBillingQuery.plan_metrics(PlanModel.list_plans())
         return jsonify({
-            "plans": PlanModel.list_plans(),
+            "plans": plans,
             "cycles": list(PLAN_CYCLES),
             "service_keys": list(SERVICE_KEYS),
         }), 200
@@ -84,11 +86,22 @@ class PlanController:
         AuditLogModel.record(current_user._id, "delete", "plan", plan_id, plan, None)
         return jsonify({"message": "Plan deleted"}), 200
 
+    @staticmethod
+    @token_required
+    def plan_insights(current_user, token, plan_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        payload = AdminBillingQuery.plan_insights(plan_id)
+        if not payload:
+            return jsonify({"error": "Plan not found"}), 404
+        return jsonify(payload), 200
+
 
 plan_blueprint = Blueprint("plan_blueprint", __name__)
 plan_blueprint.route("/public", methods=["GET"])(PlanController.list_public)
 plan_blueprint.route("/admin", methods=["GET"])(PlanController.list_admin)
 plan_blueprint.route("/admin", methods=["POST"])(PlanController.create_plan)
 plan_blueprint.route("/<string:plan_id>", methods=["GET"])(PlanController.get_plan)
+plan_blueprint.route("/admin/<string:plan_id>/insights", methods=["GET"])(PlanController.plan_insights)
 plan_blueprint.route("/admin/<string:plan_id>", methods=["PUT"])(PlanController.update_plan)
 plan_blueprint.route("/admin/<string:plan_id>", methods=["DELETE"])(PlanController.delete_plan)

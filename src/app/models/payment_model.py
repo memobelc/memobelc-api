@@ -28,6 +28,11 @@ class PaymentModel:
             "refunded_at": parse_datetime(data.get("refunded_at")),
             "origin": data.get("origin") or "platform",
             "metadata": data.get("metadata") or {},
+            "failure_reason": data.get("failure_reason"),
+            "failure_code": data.get("failure_code"),
+            "failure_at": parse_datetime(data.get("failure_at")),
+            "attempt_count": int(data.get("attempt_count") or 0),
+            "next_attempt_at": parse_datetime(data.get("next_attempt_at")),
             "created_at": now,
             "updated_at": now,
         }
@@ -45,6 +50,8 @@ class PaymentModel:
             "payment_method",
             "subscription_id",
             "origin",
+            "failure_reason",
+            "failure_code",
         ):
             if field in data:
                 updates[field] = data[field]
@@ -54,6 +61,12 @@ class PaymentModel:
             updates["paid_at"] = parse_datetime(data["paid_at"])
         if "refunded_at" in data:
             updates["refunded_at"] = parse_datetime(data["refunded_at"])
+        if "failure_at" in data:
+            updates["failure_at"] = parse_datetime(data["failure_at"])
+        if "next_attempt_at" in data:
+            updates["next_attempt_at"] = parse_datetime(data["next_attempt_at"])
+        if "attempt_count" in data:
+            updates["attempt_count"] = int(data["attempt_count"] or 0)
         if "metadata" in data:
             updates["metadata"] = data["metadata"]
         mongo.db.payments.update_one({"_id": to_object_id(payment_id)}, {"$set": updates})
@@ -109,6 +122,10 @@ class PaymentModel:
             query["status"] = filters["status"]
         if filters.get("provider"):
             query["provider"] = filters["provider"]
+        if filters.get("payment_method"):
+            query["payment_method"] = filters["payment_method"]
+        if str(filters.get("failed_only")).lower() in ("1", "true", "yes"):
+            query["status"] = {"$in": ["refused", "failed", "overdue", "canceled", "cancelled"]}
         start = parse_datetime(filters.get("date_from"))
         end = parse_datetime(filters.get("date_to"))
         if start or end:

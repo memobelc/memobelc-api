@@ -12,6 +12,7 @@ class EntitlementModel:
             "user_id": str(data["user_id"]),
             "type": data["type"],
             "resource_id": str(data["resource_id"]),
+            "source": data.get("source") or "manual",
             "revoked_at": None,
         })
         if existing:
@@ -27,6 +28,7 @@ class EntitlementModel:
             "expires_at": parse_datetime(data.get("expires_at")),
             "revoked_at": None,
             "notes": data.get("notes") or "",
+            "reason": data.get("reason") or "",
         }
         result = mongo.db.entitlements.insert_one(doc)
         doc["_id"] = result.inserted_id

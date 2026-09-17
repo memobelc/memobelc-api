@@ -104,6 +104,10 @@ class Asaas:
         return Asaas._request("GET", f"/subscriptions/{subscription_id}/payments")
 
     @staticmethod
+    def update_payment(payment_id, payload):
+        return Asaas._request("PUT", f"/payments/{payment_id}", json=payload)
+
+    @staticmethod
     def create_payment(payload):
         return Asaas._request("POST", "/payments", json=payload)
 

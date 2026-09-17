@@ -1446,6 +1446,15 @@
         "responses": { "201": { "description": "Criado" } }
       }
     },
+    "/plans/admin/{plan_id}/insights": {
+      "get": {
+        "tags": ["Plans"],
+        "summary": "Métricas, assinantes e auditoria do plano (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "plan_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Insights" }, "404": { "description": "Não encontrado" } }
+      }
+    },
     "/plans/admin/{plan_id}": {
       "put": {
         "tags": ["Plans"],
@@ -1631,20 +1640,21 @@
     "/billing/update-payment": {
       "post": {
         "tags": ["Billing"],
-        "summary": "Atualizar cartão da assinatura Asaas (ou manage_url legado do Play)",
+        "summary": "Atualizar pagamento da assinatura Asaas (PIX ou cartão, mesmo padrão do checkout)",
         "security": [{ "Bearer": [] }],
         "parameters": [{
           "name": "body",
           "in": "body",
           "schema": {
             "type": "object",
+            "required": ["billing_type", "cpf_cnpj"],
             "properties": {
-              "cpf_cnpj": { "type": "string" },
-              "credit_card": { "type": "object" }
+              "billing_type": { "type": "string", "enum": ["PIX", "CREDIT_CARD"] },
+              "cpf_cnpj": { "type": "string" }
             }
           }
         }],
-        "responses": { "200": { "description": "Cartão atualizado" } }
+        "responses": { "200": { "description": "PIX (QR) ou URL de cartão Asaas" } }
       }
     },
     "/billing/cancel": {
@@ -1737,28 +1747,106 @@
         "responses": { "201": { "description": "Criado" } }
       }
     },
+    "/admin/billing/summary": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Dashboard de assinaturas: MRR, ARR, conversão e falhas do dia",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Resumo" } }
+      }
+    },
     "/admin/billing/subscriptions": {
       "get": {
         "tags": ["AdminBilling"],
-        "summary": "Listar assinaturas com filtros",
+        "summary": "Listar assinaturas enriquecidas (usuário, plano, dias restantes)",
         "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "type": "string" },
+          { "name": "plan_id", "in": "query", "type": "string" },
+          { "name": "status", "in": "query", "type": "string" },
+          { "name": "provider", "in": "query", "type": "string" },
+          { "name": "payment_method", "in": "query", "type": "string" },
+          { "name": "date_from", "in": "query", "type": "string" },
+          { "name": "date_to", "in": "query", "type": "string" },
+          { "name": "expiring_in_days", "in": "query", "type": "integer" },
+          { "name": "sort", "in": "query", "type": "string" },
+          { "name": "skip", "in": "query", "type": "integer" },
+          { "name": "limit", "in": "query", "type": "integer" }
+        ],
         "responses": { "200": { "description": "Assinaturas" } }
+      }
+    },
+    "/admin/billing/subscriptions/export": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Exportar assinaturas (csv ou xlsx) com os mesmos filtros",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "format", "in": "query", "type": "string", "enum": ["csv", "xlsx"] }],
+        "responses": { "200": { "description": "Arquivo" } }
       }
     },
     "/admin/billing/payments": {
       "get": {
         "tags": ["AdminBilling"],
-        "summary": "Listar compras e transações",
+        "summary": "Listar pagamentos enriquecidos",
         "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "type": "string" },
+          { "name": "status", "in": "query", "type": "string" },
+          { "name": "failed_only", "in": "query", "type": "boolean" },
+          { "name": "provider", "in": "query", "type": "string" },
+          { "name": "skip", "in": "query", "type": "integer" },
+          { "name": "limit", "in": "query", "type": "integer" }
+        ],
         "responses": { "200": { "description": "Pagamentos" } }
       }
     },
+    "/admin/billing/payments/export": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Exportar pagamentos (csv ou xlsx)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "format", "in": "query", "type": "string", "enum": ["csv", "xlsx"] }],
+        "responses": { "200": { "description": "Arquivo" } }
+      }
+    },
     "/admin/billing/grants": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Listar liberações manuais enriquecidas",
+        "security": [{ "Bearer": [] }],
+        "responses": { "200": { "description": "Grants" } }
+      },
       "post": {
         "tags": ["AdminBilling"],
         "summary": "Liberar plano, livro, conjunto ou serviço manualmente",
         "security": [{ "Bearer": [] }],
+        "parameters": [{
+          "name": "body",
+          "in": "body",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "user_id": { "type": "string" },
+              "type": { "type": "string" },
+              "resource_id": { "type": "string" },
+              "expires_at": { "type": "string" },
+              "duration_days": { "type": "integer" },
+              "reason": { "type": "string" },
+              "notes": { "type": "string" }
+            }
+          }
+        }],
         "responses": { "200": { "description": "Concedido" } }
+      }
+    },
+    "/admin/billing/users/{user_id}/preview": {
+      "get": {
+        "tags": ["AdminBilling"],
+        "summary": "Resumo de cobrança do usuário para liberação manual",
+        "security": [{ "Bearer": [] }],
+        "parameters": [{ "name": "user_id", "in": "path", "required": true, "type": "string" }],
+        "responses": { "200": { "description": "Preview" } }
       }
     },
     "/admin/billing/external-sales": {

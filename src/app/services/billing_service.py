@@ -20,6 +20,7 @@ from src.app.models.subscription_model import SubscriptionModel
 from src.app.models.user_model import UserModel
 from src.app.provider.asaas import Asaas, AsaasError
 from src.app.provider.google_play import GooglePlay, GooglePlayError
+from src.app.services.admin_billing_query import failure_updates_from_payload
 from src.app.services.coupon_service import CouponService
 from src.app.services.entitlement_service import EntitlementService
 from src.app.services.affiliate_service import AffiliateService
@@ -187,6 +188,20 @@ class BillingService:
             return None
         data = payments.get("data") or []
         return data[0] if data else None
+
+    @staticmethod
+    def _unpaid_asaas_payment(asaas_subscription_id):
+        if not asaas_subscription_id:
+            return None
+        try:
+            payments = Asaas.list_subscription_payments(asaas_subscription_id)
+        except AsaasError:
+            return None
+        unpaid = [
+            item for item in (payments.get("data") or [])
+            if str(item.get("status") or "").upper() in ("PENDING", "OVERDUE")
+        ]
+        return unpaid[0] if unpaid else None
 
     @staticmethod
     def _first_invoice_url(asaas_subscription_id):
@@ -558,6 +573,9 @@ class BillingService:
         provider_sub_id = payment_payload.get("subscription")
         payment = PaymentModel.get_by_provider_id("asaas", provider_payment_id)
         subscription = SubscriptionModel.get_by_provider_id("asaas", provider_sub_id) if provider_sub_id else None
+        failure = None
+        if status in ("refused", "overdue"):
+            failure = failure_updates_from_payload(payment_payload, payment or {})
         if not payment and provider_payment_id:
             user_id = None
             product_type = "subscription" if provider_sub_id else None
@@ -572,7 +590,7 @@ class BillingService:
                 if len(parts) == 3:
                     product_type, user_id, product_id = parts
             if user_id:
-                payment = PaymentModel.create({
+                payload = {
                     "user_id": user_id,
                     "type": "subscription" if provider_sub_id else product_type,
                     "provider": "asaas",
@@ -586,7 +604,10 @@ class BillingService:
                     "payment_method": payment_payload.get("billingType"),
                     "paid_at": utcnow() if status == "confirmed" else None,
                     "metadata": dict((subscription or {}).get("metadata") or {}),
-                })
+                }
+                if failure:
+                    payload.update(failure)
+                payment = PaymentModel.create(payload)
         elif payment:
             updates = {
                 "status": status,
@@ -597,6 +618,8 @@ class BillingService:
                 updates["paid_at"] = utcnow()
             if status == "refunded":
                 updates["refunded_at"] = utcnow()
+            if failure:
+                updates.update(failure)
             payment = PaymentModel.update(payment["_id"], updates)
 
         # #region agent log
@@ -1126,6 +1149,14 @@ Equipe Memobelc
         data = data or {}
         subscription = BillingService._blocking_subscription(user._id)
         if not subscription:
+            subscription = next(
+                (
+                    item for item in SubscriptionModel.list_for_user(user._id)
+                    if item.get("status") == "refused"
+                ),
+                None,
+            )
+        if not subscription:
             return {"error": "No active subscription"}, 404
         if subscription.get("provider") == "google_play":
             return {
@@ -1134,9 +1165,9 @@ Equipe Memobelc
             }, 200
         if subscription.get("provider") != "asaas" or not subscription.get("provider_subscription_id"):
             return {"error": "No Asaas subscription"}, 400
-        asaas_card, holder_info, error = _extract_credit_card(data)
-        if error:
-            return {"error": error, "code": "credit_card_required"}, 400
+        billing_type = _normalize_billing_type(data.get("billing_type"))
+        if billing_type not in NATIVE_BILLING_TYPES:
+            return {"error": "Escolha PIX ou cartão de crédito.", "code": "billing_type_required"}, 400
         stored_cpf = _normalize_cpf_cnpj(getattr(user, "cpf_cnpj", None))
         incoming_cpf = _normalize_cpf_cnpj(data.get("cpf_cnpj"))
         cpf_cnpj = stored_cpf or incoming_cpf
@@ -1145,29 +1176,89 @@ Equipe Memobelc
         if not stored_cpf and incoming_cpf:
             UserModel.set_cpf_cnpj(user._id, incoming_cpf)
             user.cpf_cnpj = incoming_cpf
-        holder_info["email"] = user.email
-        holder_info["cpfCnpj"] = cpf_cnpj
-        remote_ip = _client_ip_from_data(data)
-        token = None
-        customer_id = subscription.get("asaas_customer_id") or getattr(user, "asaas_customer_id", None)
-        if customer_id:
-            try:
-                tokenized = Asaas.tokenize_credit_card(customer_id, asaas_card, holder_info, remote_ip)
-                token = tokenized.get("creditCardToken")
-            except AsaasError:
-                token = None
         try:
-            Asaas.update_subscription_credit_card(
-                subscription["provider_subscription_id"],
-                credit_card=asaas_card,
-                credit_card_holder=holder_info,
-                remote_ip=remote_ip,
-                credit_card_token=token,
-            )
+            customer_id = BillingService._ensure_asaas_customer(user, cpf_cnpj)
+            Asaas.update_subscription(subscription["provider_subscription_id"], {
+                "billingType": billing_type,
+            })
         except AsaasError as exc:
             return {"error": _asaas_error_message(exc), "code": "asaas_error", "details": exc.payload}, exc.status_code
-        updated = SubscriptionModel.update(subscription["_id"], {"payment_method": "CREDIT_CARD"})
-        return {"updated": True, "provider": "asaas", "subscription": updated}, 200
+
+        needs_charge = subscription.get("status") in ("pending", "overdue", "refused")
+        asaas_pay = BillingService._unpaid_asaas_payment(subscription["provider_subscription_id"])
+        current_type = _normalize_billing_type((asaas_pay or {}).get("billingType"))
+        if asaas_pay and current_type != billing_type:
+            try:
+                asaas_pay = Asaas.update_payment(asaas_pay["id"], {"billingType": billing_type})
+            except AsaasError:
+                pass
+        if needs_charge and not asaas_pay:
+            try:
+                asaas_pay = Asaas.create_payment({
+                    "customer": customer_id,
+                    "billingType": billing_type,
+                    "value": float(subscription.get("value") or 0),
+                    "dueDate": Asaas.due_date_today(),
+                    "subscription": subscription["provider_subscription_id"],
+                    "description": "Atualização de pagamento",
+                    "externalReference": f"plan:{user._id}:{subscription.get('plan_id')}",
+                })
+            except AsaasError as exc:
+                return {"error": _asaas_error_message(exc), "code": "asaas_error", "details": exc.payload}, exc.status_code
+
+        invoice_url = None
+        payment = None
+        pix = None
+        granted = subscription.get("status") in ACCESS_STATUSES
+        if asaas_pay:
+            invoice_url = asaas_pay.get("invoiceUrl") or asaas_pay.get("bankSlipUrl")
+            paid = _asaas_is_paid(asaas_pay.get("status"))
+            local = PaymentModel.get_by_provider_id("asaas", asaas_pay.get("id"))
+            payload = {
+                "status": "confirmed" if paid else "pending",
+                "invoice_url": invoice_url,
+                "payment_method": billing_type,
+            }
+            if local:
+                if paid:
+                    payload["paid_at"] = utcnow()
+                payment = PaymentModel.update(local["_id"], payload)
+            else:
+                payment = PaymentModel.create({
+                    "user_id": user._id,
+                    "type": "subscription",
+                    "provider": "asaas",
+                    "provider_payment_id": asaas_pay.get("id"),
+                    "status": "confirmed" if paid else "pending",
+                    "amount": float(asaas_pay.get("value") or subscription.get("value") or 0),
+                    "product_type": "plan",
+                    "product_id": subscription.get("plan_id"),
+                    "subscription_id": subscription["_id"],
+                    "invoice_url": invoice_url,
+                    "payment_method": billing_type,
+                    "paid_at": utcnow() if paid else None,
+                })
+            if billing_type == "PIX":
+                pix = BillingService._pix_for_payment(asaas_pay.get("id"))
+            if paid:
+                BillingService._apply_subscription_payment(subscription, "confirmed", asaas_pay, payment)
+                granted = True
+
+        updated = SubscriptionModel.update(subscription["_id"], {
+            "payment_method": billing_type,
+            "invoice_url": invoice_url or subscription.get("invoice_url"),
+            "asaas_customer_id": customer_id,
+        })
+        result, status = BillingService._native_checkout_result(
+            billing_type,
+            subscription=updated,
+            payment=payment,
+            pix=pix,
+            granted=granted,
+            invoice_url=invoice_url,
+        )
+        result["updated"] = True
+        return result, status
 
     @staticmethod
     def admin_set_status(admin, subscription_id, status, action=None):
@@ -1201,20 +1292,34 @@ Equipe Memobelc
 
     @staticmethod
     def admin_grant(admin, data):
+        from datetime import timedelta
+        from src.app.utils.billing_utils import parse_datetime, utcnow
+
         user_id = data.get("user_id")
         grant_type = data.get("type")
         resource_id = data.get("resource_id")
         notes = data.get("notes") or ""
+        reason = data.get("reason") or ""
+        expires_at = parse_datetime(data.get("expires_at"))
+        if not expires_at and data.get("duration_days"):
+            expires_at = utcnow() + timedelta(days=int(data.get("duration_days")))
         if not user_id or not grant_type or not resource_id:
             return {"error": "user_id, type and resource_id are required"}, 400
         if grant_type == "plan":
-            result = EntitlementService.grant_plan_manual(user_id, resource_id, granted_by=admin._id, notes=notes)
+            result = EntitlementService.grant_plan_manual(
+                user_id,
+                resource_id,
+                granted_by=admin._id,
+                notes=notes,
+                expires_at=expires_at,
+                reason=reason,
+            )
         elif grant_type == "book":
             result = EntitlementService.grant_book(user_id, resource_id, source="manual", granted_by=admin._id, notes=notes)
         elif grant_type == "bundle":
             result = EntitlementService.grant_bundle(user_id, resource_id, source="manual", granted_by=admin._id, notes=notes)
         elif grant_type == "course":
-            result =             EntitlementService.grant_course(user_id, resource_id, source="manual", granted_by=admin._id, notes=notes)
+            result = EntitlementService.grant_course(user_id, resource_id, source="manual", granted_by=admin._id, notes=notes)
             BillingService._enroll_course_buyer(user_id, resource_id)
         elif grant_type == "classroom":
             result = EntitlementService.grant_classroom(user_id, resource_id, source="manual", granted_by=admin._id, notes=notes)
@@ -1227,10 +1332,19 @@ Equipe Memobelc
                 "source": "manual",
                 "granted_by": admin._id,
                 "notes": notes,
+                "reason": reason,
+                "expires_at": expires_at,
             })
         else:
             return {"error": "Invalid grant type"}, 400
-        AuditLogModel.record(admin._id, "grant", grant_type, resource_id, None, result)
+        if not result:
+            return {"error": "Unable to grant access"}, 400
+        AuditLogModel.record(admin._id, "grant", grant_type, resource_id, None, {
+            "grant": result,
+            "reason": reason,
+            "notes": notes,
+            "expires_at": str(expires_at) if expires_at else None,
+        })
         return {"grant": result}, 200
 
     @staticmethod

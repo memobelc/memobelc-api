@@ -61,21 +61,38 @@ class EntitlementService:
         return EntitlementService._subscription_grants_access(subscription)
 
     @staticmethod
-    def grant_subscription_entitlements(user_id, plan, subscription_id):
+    def grant_subscription_entitlements(
+        user_id,
+        plan,
+        subscription_id,
+        source="subscription",
+        granted_by=None,
+        notes="",
+        expires_at=None,
+        reason="",
+    ):
+        extra = {
+            "granted_by": granted_by,
+            "notes": notes,
+            "expires_at": expires_at,
+            "reason": reason,
+        }
         EntitlementModel.grant({
             "user_id": user_id,
             "type": "plan",
             "resource_id": plan["_id"],
-            "source": "subscription",
+            "source": source,
             "source_id": subscription_id,
+            **extra,
         })
         for service_key in plan.get("included_service_keys") or []:
             EntitlementModel.grant({
                 "user_id": user_id,
                 "type": "service",
                 "resource_id": service_key,
-                "source": "subscription",
+                "source": source,
                 "source_id": subscription_id,
+                **extra,
             })
         book_ids = list(plan.get("included_book_ids") or [])
         for bundle_id in plan.get("included_bundle_ids") or []:
@@ -83,8 +100,9 @@ class EntitlementService:
                 "user_id": user_id,
                 "type": "bundle",
                 "resource_id": bundle_id,
-                "source": "subscription",
+                "source": source,
                 "source_id": subscription_id,
+                **extra,
             })
             bundle = BookBundleModel.get_by_id(bundle_id)
             if bundle:
@@ -94,14 +112,23 @@ class EntitlementService:
             if book_id in seen:
                 continue
             seen.add(book_id)
-            EntitlementService.grant_book(user_id, book_id, source="subscription", source_id=subscription_id)
+            EntitlementService.grant_book(
+                user_id,
+                book_id,
+                source=source,
+                source_id=subscription_id,
+                granted_by=granted_by,
+                notes=notes,
+                expires_at=expires_at,
+            )
 
     @staticmethod
     def revoke_subscription_entitlements(user_id, subscription_id):
         EntitlementModel.revoke_by_source(user_id, "subscription", subscription_id)
+        EntitlementModel.revoke_by_source(user_id, "manual", subscription_id)
 
     @staticmethod
-    def grant_book(user_id, book_id, source="purchase", source_id=None, granted_by=None, notes=""):
+    def grant_book(user_id, book_id, source="purchase", source_id=None, granted_by=None, notes="", expires_at=None):
         entitlement = EntitlementModel.grant({
             "user_id": user_id,
             "type": "book",
@@ -110,6 +137,7 @@ class EntitlementService:
             "source_id": source_id,
             "granted_by": granted_by,
             "notes": notes,
+            "expires_at": expires_at,
         })
         BookModel.add_book_to_user(user_id, book_id)
         return entitlement
@@ -159,12 +187,14 @@ class EntitlementService:
         })
 
     @staticmethod
-    def grant_plan_manual(user_id, plan_id, granted_by=None, notes=""):
+    def grant_plan_manual(user_id, plan_id, granted_by=None, notes="", expires_at=None, reason=""):
         plan = PlanModel.get_by_id(plan_id)
         if not plan:
             return None
         from src.app.models.subscription_model import SubscriptionModel
+        from src.app.utils.billing_utils import parse_datetime
 
+        expires = parse_datetime(expires_at)
         subscription = SubscriptionModel.create({
             "user_id": user_id,
             "plan_id": plan_id,
@@ -173,18 +203,20 @@ class EntitlementService:
             "value": 0,
             "original_value": plan.get("price") or 0,
             "billing_cycle": plan.get("cycle"),
-            "metadata": {"notes": notes},
+            "current_period_end": expires,
+            "next_due_date": expires,
+            "metadata": {"notes": notes, "reason": reason},
         })
-        EntitlementService.grant_subscription_entitlements(user_id, plan, subscription["_id"])
-        EntitlementModel.grant({
-            "user_id": user_id,
-            "type": "plan",
-            "resource_id": plan_id,
-            "source": "manual",
-            "source_id": subscription["_id"],
-            "granted_by": granted_by,
-            "notes": notes,
-        })
+        EntitlementService.grant_subscription_entitlements(
+            user_id,
+            plan,
+            subscription["_id"],
+            source="manual",
+            granted_by=granted_by,
+            notes=notes,
+            expires_at=expires,
+            reason=reason,
+        )
         return subscription
 
     @staticmethod
