@@ -14,6 +14,13 @@ class BundleController:
         return jsonify({"bundles": BookBundleModel.list_bundles(published_only=True)}), 200
 
     @staticmethod
+    def get_public(bundle_id):
+        bundle = BookBundleModel.get_public(bundle_id)
+        if not bundle:
+            return jsonify({"error": "Bundle not found"}), 404
+        return jsonify(bundle), 200
+
+    @staticmethod
     @token_required
     def list_admin(current_user, token):
         if not current_user.has_role("admin"):
@@ -32,6 +39,7 @@ class BundleController:
             bundle = BookBundleModel.create(data)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        BookBundleModel.sync_affiliate_product(bundle)
         AuditLogModel.record(current_user._id, "create", "bundle", bundle["_id"], None, bundle)
         return jsonify(bundle), 201
 
@@ -47,6 +55,7 @@ class BundleController:
             return jsonify({"error": str(exc)}), 400
         if not bundle:
             return jsonify({"error": "Bundle not found"}), 404
+        BookBundleModel.sync_affiliate_product(bundle)
         AuditLogModel.record(current_user._id, "update", "bundle", bundle_id, None, bundle)
         return jsonify(bundle), 200
 
@@ -58,12 +67,14 @@ class BundleController:
         deleted = BookBundleModel.delete(bundle_id)
         if not deleted:
             return jsonify({"error": "Bundle not found"}), 404
+        BookBundleModel.deactivate_affiliate_product(bundle_id)
         AuditLogModel.record(current_user._id, "delete", "bundle", bundle_id)
         return jsonify({"message": "Bundle deleted"}), 200
 
 
 bundle_blueprint = Blueprint("bundle_blueprint", __name__)
 bundle_blueprint.route("/public", methods=["GET"])(BundleController.list_public)
+bundle_blueprint.route("/public/<string:bundle_id>", methods=["GET"])(BundleController.get_public)
 bundle_blueprint.route("/admin", methods=["GET"])(BundleController.list_admin)
 bundle_blueprint.route("/admin", methods=["POST"])(BundleController.create_bundle)
 bundle_blueprint.route("/admin/<string:bundle_id>", methods=["PUT"])(BundleController.update_bundle)

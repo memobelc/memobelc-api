@@ -1066,3 +1066,209 @@ def test_asaas_refused_webhook_stores_failure_reason(client):
     assert payment.get("attempt_count") >= 1
     updated = SubscriptionModel.get_by_id(subscription["_id"])
     assert updated is not None
+
+
+def _unique_cpf(suffix):
+    return f"{int(suffix[:8], 16):011d}"
+
+
+def _create_bundle(admin_headers, client, book_ids, **overrides):
+    payload = {
+        "name": "Conjunto",
+        "description": "Livros juntos",
+        "price": 39.9,
+        "book_ids": book_ids,
+        "is_published": False,
+        "checkout_enabled": False,
+        "affiliate_enabled": False,
+    }
+    payload.update(overrides)
+    response = client.post("/bundles/admin", headers=admin_headers, data=json.dumps(payload))
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()
+
+
+def test_bundle_admin_crud_flags_and_public_checkout(client):
+    from src.app.models.affiliate_product_model import AffiliateProductModel
+
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_bundle_{suffix}@example.com", admin=True)
+    user_headers, user_id = _auth_user(client, f"user_bundle_auth_{suffix}@example.com")
+    book_a = _create_paid_book(titulo=f"Livro A {suffix}")
+    book_b = _create_paid_book(titulo=f"Livro B {suffix}")
+    bundle = _create_bundle(
+        admin_headers,
+        client,
+        [book_a["_id"], book_b["_id"]],
+        name=f"Conjunto {suffix}",
+        is_published=False,
+        checkout_enabled=False,
+        affiliate_enabled=False,
+    )
+    assert bundle["checkout_url"].endswith(f"/checkout/{bundle['_id']}")
+    assert bundle["checkout_enabled"] is False
+    hidden = client.get(f"/bundles/public/{bundle['_id']}")
+    assert hidden.status_code == 404
+
+    listed = client.get("/bundles/public", headers=user_headers)
+    assert listed.status_code == 200
+    assert all(item["_id"] != bundle["_id"] for item in listed.get_json()["bundles"])
+
+    blocked = client.post(
+        "/billing/checkout",
+        headers=user_headers,
+        data=json.dumps({
+            "product_type": "bundle",
+            "product_id": bundle["_id"],
+            "platform": "web",
+            "billing_type": "PIX",
+            "cpf_cnpj": _unique_cpf(suffix),
+        }),
+    )
+    assert blocked.status_code == 400
+
+    updated = client.put(
+        f"/bundles/admin/{bundle['_id']}",
+        headers=admin_headers,
+        data=json.dumps({
+            "is_published": True,
+            "affiliate_enabled": True,
+            "price": 49.9,
+        }),
+    )
+    assert updated.status_code == 200, updated.get_json()
+    body = updated.get_json()
+    assert body["is_published"] is True
+    assert body["affiliate_enabled"] is True
+    assert body["checkout_enabled"] is True
+    public = client.get(f"/bundles/public/{bundle['_id']}")
+    assert public.status_code == 200
+    assert public.get_json()["price"] == 49.9
+    affiliate = AffiliateProductModel.find_by_platform("bundle", bundle["_id"])
+    assert affiliate is not None
+    assert affiliate["affiliate_enabled"] is True
+    assert affiliate["show_in_catalog"] is True
+    assert affiliate["checkout_url"].endswith(f"/checkout/{bundle['_id']}")
+
+    disabled = client.put(
+        f"/bundles/admin/{bundle['_id']}",
+        headers=admin_headers,
+        data=json.dumps({"affiliate_enabled": False, "checkout_enabled": True}),
+    )
+    assert disabled.status_code == 200
+    affiliate = AffiliateProductModel.find_by_platform("bundle", bundle["_id"])
+    assert affiliate["affiliate_enabled"] is False
+    assert affiliate["is_active"] is False
+
+    deleted = client.delete(f"/bundles/admin/{bundle['_id']}", headers=admin_headers)
+    assert deleted.status_code == 200
+    assert client.get(f"/bundles/public/{bundle['_id']}").status_code == 404
+
+
+@patch("src.app.services.billing_service.Asaas.verify_webhook", return_value=True)
+@patch("src.app.services.billing_service.Asaas.get_pix_qr_code", return_value={"encodedImage": "bbb==", "payload": "000201bundle", "expirationDate": "2026-08-28 23:59:59"})
+@patch("src.app.services.billing_service.Asaas.create_customer", return_value={"id": "cus_bundle"})
+@patch("src.app.services.billing_service.Asaas.create_payment", return_value={"id": "pay_bundle_1", "status": "PENDING", "invoiceUrl": "https://asaas.test/bundle"})
+def test_bundle_public_checkout_grants_all_books(mock_pay, mock_cus, mock_pix, mock_wh, client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_bundle_pay_{suffix}@example.com", admin=True)
+    book_a = _create_paid_book(titulo=f"Livro A {suffix}")
+    book_b = _create_paid_book(titulo=f"Livro B {suffix}")
+    bundle = _create_bundle(
+        admin_headers,
+        client,
+        [book_a["_id"], book_b["_id"]],
+        name=f"Conjunto pago {suffix}",
+        is_published=False,
+        checkout_enabled=True,
+        price=59.9,
+    )
+    catalog = client.get("/bundles/public", headers=admin_headers)
+    assert catalog.status_code == 200
+    assert all(item["_id"] != bundle["_id"] for item in catalog.get_json()["bundles"])
+    email = f"buyer_bundle_{suffix}@example.com"
+    response = client.post(
+        "/billing/public/checkout",
+        data=json.dumps({
+            "product_type": "bundle",
+            "product_id": bundle["_id"],
+            "name": "Comprador Conjunto",
+            "email": email,
+            "billing_type": "PIX",
+            "cpf_cnpj": _unique_cpf(suffix),
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["provider"] == "asaas"
+    buyer = UserModel.find_by_email(email)
+    assert buyer is not None
+    webhook = client.post("/billing/asaas/webhook", json={
+        "id": f"evt_bundle_{suffix}",
+        "event": "PAYMENT_CONFIRMED",
+        "payment": {
+            "id": "pay_bundle_1",
+            "value": 59.9,
+            "billingType": "PIX",
+            "invoiceUrl": "https://asaas.test/bundle",
+            "externalReference": f"bundle:{buyer._id}:{bundle['_id']}",
+        },
+    })
+    assert webhook.status_code == 200
+    entitlements = EntitlementModel.list_active_for_user(buyer._id)
+    assert any(item["type"] == "bundle" and item["resource_id"] == bundle["_id"] for item in entitlements)
+    allowed_a, _ = EntitlementService.can_access_book(buyer, book_a["_id"])
+    allowed_b, _ = EntitlementService.can_access_book(buyer, book_b["_id"])
+    assert allowed_a is True
+    assert allowed_b is True
+
+
+@patch("src.app.services.billing_service.Asaas.verify_webhook", return_value=True)
+@patch("src.app.services.billing_service.Asaas.get_pix_qr_code", return_value={"encodedImage": "bbb==", "payload": "000201bundle2", "expirationDate": "2026-08-28 23:59:59"})
+@patch("src.app.services.billing_service.Asaas.create_customer", return_value={"id": "cus_bundle_store"})
+@patch("src.app.services.billing_service.Asaas.create_payment", return_value={"id": "pay_bundle_store", "status": "PENDING", "invoiceUrl": "https://asaas.test/bundle-store"})
+def test_published_bundle_authenticated_checkout(mock_pay, mock_cus, mock_pix, mock_wh, client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(client, f"admin_bundle_store_{suffix}@example.com", admin=True)
+    user_headers, user_id = _auth_user(client, f"user_bundle_store_{suffix}@example.com")
+    book = _create_paid_book(titulo=f"Livro store {suffix}")
+    bundle = _create_bundle(
+        admin_headers,
+        client,
+        [book["_id"]],
+        name=f"Conjunto vitrine {suffix}",
+        is_published=True,
+        checkout_enabled=False,
+        price=29.9,
+    )
+    listed = client.get("/bundles/public", headers=user_headers)
+    assert any(item["_id"] == bundle["_id"] for item in listed.get_json()["bundles"])
+    assert client.get(f"/bundles/public/{bundle['_id']}").status_code == 404
+    response = client.post(
+        "/billing/checkout",
+        headers=user_headers,
+        data=json.dumps({
+            "product_type": "bundle",
+            "product_id": bundle["_id"],
+            "platform": "web",
+            "billing_type": "PIX",
+            "cpf_cnpj": _unique_cpf(suffix),
+        }),
+    )
+    assert response.status_code == 200, response.get_json()
+    webhook = client.post("/billing/asaas/webhook", json={
+        "id": f"evt_bundle_store_{suffix}",
+        "event": "PAYMENT_CONFIRMED",
+        "payment": {
+            "id": "pay_bundle_store",
+            "value": 29.9,
+            "billingType": "PIX",
+            "invoiceUrl": "https://asaas.test/bundle-store",
+            "externalReference": f"bundle:{user_id}:{bundle['_id']}",
+        },
+    })
+    assert webhook.status_code == 200
+    user = UserModel.find_by_id(user_id)
+    allowed, _ = EntitlementService.can_access_book(user, book["_id"])
+    assert allowed is True

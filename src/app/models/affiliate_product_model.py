@@ -131,7 +131,7 @@ class AffiliateProductModel:
         return serialize_doc(mongo.db.affiliate_products.find_one({"slug": str(slug).strip()}))
 
     @staticmethod
-    def find_platform_product(product_type, product_id):
+    def find_by_platform(product_type, product_id):
         if not product_type or not product_id:
             return None
         return serialize_doc(
@@ -139,10 +139,15 @@ class AffiliateProductModel:
                 "source": "platform",
                 "product_type": product_type,
                 "product_id": str(product_id),
-                "is_active": True,
-                "affiliate_enabled": True,
             })
         )
+
+    @staticmethod
+    def find_platform_product(product_type, product_id):
+        item = AffiliateProductModel.find_by_platform(product_type, product_id)
+        if not item or not item.get("is_active") or not item.get("affiliate_enabled"):
+            return None
+        return item
 
     @staticmethod
     def related_sale_keys(product_type, product_id):

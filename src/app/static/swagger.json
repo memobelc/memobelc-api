@@ -1733,6 +1733,19 @@
         "responses": { "200": { "description": "Conjuntos" } }
       }
     },
+    "/bundles/public/{bundle_id}": {
+      "get": {
+        "tags": ["Bundles"],
+        "summary": "Obter conjunto público para checkout externo",
+        "parameters": [
+          { "name": "bundle_id", "in": "path", "required": true, "type": "string" }
+        ],
+        "responses": {
+          "200": { "description": "Conjunto" },
+          "404": { "description": "Checkout não habilitado" }
+        }
+      }
+    },
     "/bundles/admin": {
       "get": {
         "tags": ["Bundles"],
@@ -1745,6 +1758,32 @@
         "summary": "Criar conjunto (admin)",
         "security": [{ "Bearer": [] }],
         "responses": { "201": { "description": "Criado" } }
+      }
+    },
+    "/bundles/admin/{bundle_id}": {
+      "put": {
+        "tags": ["Bundles"],
+        "summary": "Atualizar conjunto (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "bundle_id", "in": "path", "required": true, "type": "string" }
+        ],
+        "responses": {
+          "200": { "description": "Atualizado" },
+          "404": { "description": "Não encontrado" }
+        }
+      },
+      "delete": {
+        "tags": ["Bundles"],
+        "summary": "Excluir conjunto (admin)",
+        "security": [{ "Bearer": [] }],
+        "parameters": [
+          { "name": "bundle_id", "in": "path", "required": true, "type": "string" }
+        ],
+        "responses": {
+          "200": { "description": "Excluído" },
+          "404": { "description": "Não encontrado" }
+        }
       }
     },
     "/admin/billing/summary": {

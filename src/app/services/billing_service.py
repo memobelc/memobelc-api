@@ -280,8 +280,11 @@ class BillingService:
         if product_type == "book" and product.get("is_free"):
             EntitlementService.grant_book(user._id, product["_id"], source="purchase")
             return {"provider": "free", "granted": True, "product_id": product["_id"]}, 200
-        if product_type == "bundle" and not product.get("is_published"):
-            return {"error": "Bundle is not available"}, 400
+        if product_type == "bundle":
+            if not product.get("is_published") and not product.get("checkout_enabled"):
+                return {"error": "Bundle is not available"}, 400
+            if float(product.get("price") or 0) <= 0:
+                return {"error": "Bundle price is not set"}, 400
         if product_type == "course":
             if not product.get("checkout_enabled"):
                 return {"error": "Course checkout is not available"}, 400
@@ -945,8 +948,8 @@ Equipe Memobelc
             data["product_type"] = "classroom"
             data["product_id"] = classroom_id
             product_type = "classroom"
-        if product_type != "classroom":
-            return {"error": "Only classroom public checkout is supported"}, 400
+        if product_type not in ("classroom", "bundle"):
+            return {"error": "Only classroom and bundle public checkout is supported"}, 400
         product_id = data.get("product_id")
         if not product_id:
             return {"error": "product_id is required"}, 400
@@ -958,18 +961,24 @@ Equipe Memobelc
         if not cpf_cnpj:
             return {"error": "Informe um CPF ou CNPJ válido.", "code": "cpf_required"}, 400
 
-        product = BillingService._product("classroom", product_id)
-        if not product or not product.get("checkout_allowed") or not product.get("checkout_enabled"):
-            return {"error": "Product not found"}, 404
-        if float(product.get("price") or 0) <= 0:
-            return {"error": "Classroom price is not set"}, 400
+        product = BillingService._product(product_type, product_id)
+        if product_type == "classroom":
+            if not product or not product.get("checkout_allowed") or not product.get("checkout_enabled"):
+                return {"error": "Product not found"}, 404
+            if float(product.get("price") or 0) <= 0:
+                return {"error": "Classroom price is not set"}, 400
+        else:
+            if not product or not product.get("checkout_enabled"):
+                return {"error": "Product not found"}, 404
+            if float(product.get("price") or 0) <= 0:
+                return {"error": "Bundle price is not set"}, 400
 
         buyer, error, status = BillingService._resolve_checkout_buyer(email, name, cpf_cnpj)
         if error:
             return error, status
         user = buyer["user"]
         created = buyer["created"]
-        classroom_id = product.get("_id")
+        classroom_id = product.get("_id") if product_type == "classroom" else None
         if classroom_id and ClassroomModel.is_student(classroom_id, user._id):
             return {
                 "granted": True,
