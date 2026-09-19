@@ -18,6 +18,7 @@ from src.app.models.push_notification_model import PushNotificationModel
 from src.app.services.classroom_service import ClassroomService
 from src.app.services.collections_service import CollectionService
 from src.app.services.profile_service import empty_address
+from src.app.services.tutorial_service import TutorialService
 
 
 def _iso(value):
@@ -411,6 +412,7 @@ class AdminService:
             "chats": chats,
             "badges": BadgeModel.list_for_user(str(user_id)),
             "missions": completed_missions,
+            "tutorials": TutorialService.user_profile_status(str(user_id)),
         }
         return _json_safe(payload)
 
@@ -454,6 +456,8 @@ class AdminService:
         mongo.db.chats.delete_many({"user_id": _as_object_id(user_id)})
         mongo.db.user_streaks.delete_many({"user_id": _as_object_id(user_id)})
         mongo.db.user_access_log.delete_many({"user_id": _as_object_id(user_id)})
+        mongo.db.user_tutorial_progress.delete_many({"user_id": str(user_id)})
+        mongo.db.tutorial_events.delete_many({"user_id": str(user_id)})
         mongo.db.user_books.delete_many({"user_id": _as_object_id(user_id)})
         mongo.db.coin_ledger.delete_many({"user_id": str(user_id)})
         mongo.db.support_tickets.delete_many({"user_id": str(user_id)})

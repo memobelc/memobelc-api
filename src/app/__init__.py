@@ -55,6 +55,11 @@ def create_app():
             SettingsService.bootstrap()
         except Exception:
             pass
+        try:
+            from .models.tutorial_model import TutorialModel
+            TutorialModel.ensure_indexes()
+        except Exception:
+            pass
 
     SWAGGER_URL = "/doc"
     # Usar rota da própria app para o spec (mesma origem, evita CORS no fetch do spec)
