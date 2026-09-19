@@ -203,6 +203,21 @@ class NotificationController:
             return jsonify({"error": "Group not found"}), 404
         return jsonify({"deleted": True}), 200
 
+    @staticmethod
+    @token_required
+    def list_admin_sent(current_user, token):
+        _require_admin(current_user)
+        return jsonify({"notifications": NotificationService.list_admin_sent()}), 200
+
+    @staticmethod
+    @token_required
+    def delete_admin_sent(current_user, token, batch_id):
+        _require_admin(current_user)
+        deleted = NotificationService.delete_admin_sent(batch_id)
+        if deleted <= 0:
+            return jsonify({"error": "Notification not found"}), 404
+        return jsonify({"deleted": True, "count": deleted}), 200
+
 
 notification_blueprint = Blueprint("notification_blueprint", __name__)
 
@@ -222,3 +237,7 @@ notification_blueprint.route("/admin/groups", methods=["GET"])(NotificationContr
 notification_blueprint.route("/admin/groups", methods=["POST"])(NotificationController.create_group)
 notification_blueprint.route("/admin/groups/<string:group_id>", methods=["PATCH"])(NotificationController.update_group)
 notification_blueprint.route("/admin/groups/<string:group_id>", methods=["DELETE"])(NotificationController.delete_group)
+notification_blueprint.route("/admin/sent", methods=["GET"])(NotificationController.list_admin_sent)
+notification_blueprint.route("/admin/sent/<string:batch_id>", methods=["DELETE"])(
+    NotificationController.delete_admin_sent
+)

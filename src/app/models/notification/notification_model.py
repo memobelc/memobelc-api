@@ -92,3 +92,35 @@ class NotificationModel:
             },
         )
         return result.modified_count
+
+    @staticmethod
+    def delete_by_batch_id(batch_id):
+        """Remove todas as notificações de um envio agrupado."""
+        if not batch_id:
+            return 0
+        result = mongo.db.notifications.delete_many({"data.batch_id": str(batch_id)})
+        return result.deleted_count
+
+    @staticmethod
+    def delete_ids(ids):
+        oids = []
+        for item in ids or []:
+            try:
+                oids.append(ObjectId(str(item)))
+            except Exception:
+                continue
+        if not oids:
+            return 0
+        result = mongo.db.notifications.delete_many({"_id": {"$in": oids}})
+        return result.deleted_count
+
+    @staticmethod
+    def list_admin_custom():
+        return list(
+            mongo.db.notifications.find({"type": "admin_custom"}).sort("created_at", -1)
+        )
+
+    @staticmethod
+    def delete_by_user(user_id):
+        result = mongo.db.notifications.delete_many({"user_id": str(user_id)})
+        return result.deleted_count

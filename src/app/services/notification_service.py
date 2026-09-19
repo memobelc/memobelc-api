@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from datetime import datetime, timezone
+import hashlib
 
 from flask import current_app
 from flask_mail import Message
@@ -407,6 +408,7 @@ Equipe Memobelc
         extra_data: Dict[str, Any] = {"from_admin_id": admin_id}
         resolved_type = (target_type or "").strip() or ("users" if user_ids else "all")
         extra_data["target_type"] = resolved_type
+        extra_data["batch_id"] = str(ObjectId())
         if classroom_id:
             extra_data["classroom_id"] = classroom_id
         if group_id:
@@ -421,7 +423,65 @@ Equipe Memobelc
                 extra_data=extra_data,
             )
 
-        return {"sent_to": len(target_users)}
+        return {"sent_to": len(target_users), "batch_id": extra_data["batch_id"]}
+
+    @staticmethod
+    def _legacy_batch_id(doc: Dict[str, Any]) -> str:
+        data = doc.get("data") or {}
+        created = doc.get("created_at")
+        if created and getattr(created, "tzinfo", None) is None:
+            created = created.replace(tzinfo=timezone.utc)
+        minute = created.replace(second=0, microsecond=0) if created else None
+        raw = (
+            f"{data.get('title') or ''}\n{data.get('body') or ''}\n"
+            f"{minute.isoformat() if minute else ''}"
+        )
+        return "legacy-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    @staticmethod
+    def _iso(value):
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def list_admin_sent(limit: int = 100) -> List[Dict[str, Any]]:
+        groups: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for doc in NotificationModel.list_admin_custom():
+            data = doc.get("data") or {}
+            batch_id = data.get("batch_id") or NotificationService._legacy_batch_id(doc)
+            if batch_id not in groups:
+                groups[batch_id] = {
+                    "batch_id": batch_id,
+                    "title": data.get("title") or "",
+                    "body": data.get("body") or "",
+                    "target_type": data.get("target_type"),
+                    "sent_to": 0,
+                    "created_at": NotificationService._iso(doc.get("created_at")),
+                    "from_admin_id": data.get("from_admin_id"),
+                    "legacy": not bool(data.get("batch_id")),
+                }
+                order.append(batch_id)
+            groups[batch_id]["sent_to"] += 1
+        return [groups[key] for key in order[:limit]]
+
+    @staticmethod
+    def delete_admin_sent(batch_id: str) -> int:
+        batch_id = str(batch_id or "").strip()
+        if not batch_id:
+            return 0
+        if batch_id.startswith("legacy-"):
+            ids = [
+                doc["_id"]
+                for doc in NotificationModel.list_admin_custom()
+                if not (doc.get("data") or {}).get("batch_id")
+                and NotificationService._legacy_batch_id(doc) == batch_id
+            ]
+            return NotificationModel.delete_ids(ids)
+        return NotificationModel.delete_by_batch_id(batch_id)
 
     @staticmethod
     def _admin_user_ids(exclude_user_id: Optional[str] = None) -> List[str]:

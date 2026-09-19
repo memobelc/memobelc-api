@@ -332,3 +332,57 @@ def test_admin_custom_roles_and_group(client):
         },
     )
     assert invalid_student.status_code == 400
+
+
+def test_admin_sent_list_and_delete_removes_from_inbox(client):
+    import uuid
+
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers, _ = _auth_user(
+        client, f"admin_sent_{suffix}@example.com", roles=["user", "admin"]
+    )
+    target_headers, target_id = _auth_user(client, f"inbox_{suffix}@example.com")
+
+    sent = client.post(
+        "/notifications/admin/custom",
+        headers=admin_headers,
+        json={
+            "title": "Recall me",
+            "body": "Please ignore",
+            "target_type": "users",
+            "user_ids": [target_id],
+        },
+    )
+    assert sent.status_code == 200, sent.get_json()
+    batch_id = sent.get_json().get("batch_id")
+    assert batch_id
+
+    listed = client.get("/notifications/admin/sent", headers=admin_headers)
+    assert listed.status_code == 200
+    items = listed.get_json()["notifications"]
+    assert any(item["batch_id"] == batch_id and item["title"] == "Recall me" for item in items)
+
+    inbox = client.get("/notifications/list", headers=target_headers)
+    assert inbox.status_code == 200
+    assert any(
+        (n.get("data") or {}).get("title") == "Recall me"
+        for n in inbox.get_json()["notifications"]
+    )
+
+    deleted = client.delete(f"/notifications/admin/sent/{batch_id}", headers=admin_headers)
+    assert deleted.status_code == 200
+    assert deleted.get_json()["deleted"] is True
+
+    inbox_after = client.get("/notifications/list", headers=target_headers)
+    assert all(
+        (n.get("data") or {}).get("title") != "Recall me"
+        for n in inbox_after.get_json()["notifications"]
+    )
+
+
+def test_admin_sent_requires_admin(client):
+    import uuid
+
+    headers, _ = _auth_user(client, f"user_sent_{uuid.uuid4().hex[:8]}@example.com")
+    response = client.get("/notifications/admin/sent", headers=headers)
+    assert response.status_code in (401, 403)

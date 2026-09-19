@@ -148,3 +148,12 @@ class BadgeModel:
                 "awarded_at": serialize_doc({"awarded_at": award.get("awarded_at")}).get("awarded_at"),
             })
         return result
+
+    @staticmethod
+    def delete(badge_id):
+        badge = BadgeModel.get_by_id(badge_id)
+        if not badge:
+            return False
+        mongo.db.user_badges.delete_many({"badge_id": str(badge_id)})
+        result = mongo.db.badges.delete_one({"_id": to_object_id(badge_id)})
+        return result.deleted_count > 0

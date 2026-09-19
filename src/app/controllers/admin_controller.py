@@ -221,10 +221,108 @@ class AdminController:
             return jsonify({"error": "User not found"}), 404
         return jsonify(result), 200
 
+    @staticmethod
+    @token_required
+    def update_user(current_user, token, user_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        data = request.get_json() or {}
+        try:
+            result = ProfileService.update_me(user_id, data, allow_email=True)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except InvalidId:
+            return jsonify({"error": "User not found"}), 404
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def delete_user(current_user, token, user_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        try:
+            result = AdminService.delete_user(user_id, current_user._id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except InvalidId:
+            return jsonify({"error": "User not found"}), 404
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify({"deleted": True}), 200
+
+    @staticmethod
+    @token_required
+    def delete_user_collection(current_user, token, user_id, collection_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        try:
+            result = AdminService.delete_user_collection(user_id, collection_id)
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            return jsonify({"error": str(exc)}), status
+        except InvalidId:
+            return jsonify({"error": "Not found"}), 404
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def delete_user_deck(current_user, token, user_id, deck_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        try:
+            result = AdminService.delete_user_deck(user_id, deck_id)
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            return jsonify({"error": str(exc)}), status
+        except InvalidId:
+            return jsonify({"error": "Not found"}), 404
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def delete_user_card(current_user, token, user_id, card_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        try:
+            result = AdminService.delete_user_card(user_id, card_id)
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            return jsonify({"error": str(exc)}), status
+        except InvalidId:
+            return jsonify({"error": "Not found"}), 404
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def delete_badge(current_user, token, badge_id):
+        if not current_user.has_role("admin"):
+            return jsonify({"error": "Unauthorized"}), 403
+        try:
+            deleted = BadgeModel.delete(badge_id)
+        except InvalidId:
+            return jsonify({"error": "Badge not found"}), 404
+        if not deleted:
+            return jsonify({"error": "Badge not found"}), 404
+        return jsonify({"deleted": True}), 200
+
 
 admin_blueprint = Blueprint("admin_blueprint", __name__)
 
 admin_blueprint.route("/users", methods=["GET"])(AdminController.list_users)
+admin_blueprint.route("/users/<string:user_id>", methods=["PATCH"])(
+    AdminController.update_user
+)
+admin_blueprint.route("/users/<string:user_id>", methods=["DELETE"])(
+    AdminController.delete_user
+)
 admin_blueprint.route("/users/<string:user_id>/profile", methods=["GET"])(
     AdminController.get_user_profile
 )
@@ -237,10 +335,25 @@ admin_blueprint.route("/users/<string:user_id>/badges", methods=["POST"])(
 admin_blueprint.route("/users/<string:user_id>/coins", methods=["POST"])(
     AdminController.grant_coins
 )
+admin_blueprint.route(
+    "/users/<string:user_id>/collections/<string:collection_id>",
+    methods=["DELETE"],
+)(AdminController.delete_user_collection)
+admin_blueprint.route(
+    "/users/<string:user_id>/decks/<string:deck_id>",
+    methods=["DELETE"],
+)(AdminController.delete_user_deck)
+admin_blueprint.route(
+    "/users/<string:user_id>/cards/<string:card_id>",
+    methods=["DELETE"],
+)(AdminController.delete_user_card)
 admin_blueprint.route("/badges", methods=["GET"])(AdminController.list_badges)
 admin_blueprint.route("/badges", methods=["POST"])(AdminController.create_badge)
 admin_blueprint.route("/badges/<string:badge_id>", methods=["PATCH"])(
     AdminController.update_badge
+)
+admin_blueprint.route("/badges/<string:badge_id>", methods=["DELETE"])(
+    AdminController.delete_badge
 )
 admin_blueprint.route("/badges/<string:badge_id>/users", methods=["GET"])(
     AdminController.list_badge_earners

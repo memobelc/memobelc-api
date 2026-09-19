@@ -56,7 +56,7 @@ class ProfileService:
         return serialize_profile(user_id, include_rewards=True)
 
     @staticmethod
-    def update_me(user_id, data):
+    def update_me(user_id, data, allow_email=False):
         updates = {}
         if "name" in data:
             name = (data.get("name") or "").strip()
@@ -77,6 +77,14 @@ class ProfileService:
                 updates["cpf_cnpj"] = normalized
         if "address" in data:
             updates["address"] = UserModel.normalize_address(data.get("address"))
+        if allow_email and "email" in data:
+            email = (data.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                raise ValueError("Invalid email address")
+            existing = UserModel.find_by_email(email)
+            if existing and str(existing._id) != str(user_id):
+                raise ValueError("This email is already in use. Please try another one.")
+            updates["email"] = email
         if not updates:
             return serialize_profile(user_id)
         updated = UserModel.update_profile(user_id, updates)
