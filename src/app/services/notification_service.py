@@ -528,6 +528,23 @@ Equipe Memobelc
         )
 
     @staticmethod
+    def notify_user_support_closed(user_id: str, ticket_id: str, csat_required: bool):
+        """Notifica o usuário quando o admin encerra o atendimento."""
+        title = "Atendimento encerrado"
+        body = (
+            "O suporte encerrou o atendimento. Avalie sua experiência."
+            if csat_required
+            else "O suporte encerrou o atendimento."
+        )
+        NotificationService._create_and_push(
+            user_id=str(user_id),
+            notification_type=NotificationService.TYPE_SUPPORT,
+            title=title,
+            body=body,
+            extra_data={"ticket_id": str(ticket_id), "csat_required": bool(csat_required)},
+        )
+
+    @staticmethod
     def notify_admins_affiliate(title: str, body: str, kind: str, extra_data: Optional[Dict[str, Any]] = None):
         payload = {"kind": kind}
         if extra_data:

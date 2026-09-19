@@ -4,10 +4,14 @@ from datetime import datetime, timezone
 
 from src.app import mongo
 from src.app.models.support_message_model import SupportMessageModel
-from src.app.models.support_ticket_model import SupportTicketModel
+from src.app.models.support_ticket_model import CSAT_MAX, CSAT_MIN, SupportTicketModel
 from src.app.models.user_model import UserModel
 
 MAX_BODY_LENGTH = 4000
+SYSTEM_CLOSED = "This support conversation was closed."
+SYSTEM_CLOSED_CSAT = (
+    "This support conversation was closed. Please rate your experience."
+)
 
 
 class SupportError(Exception):
@@ -65,24 +69,51 @@ def _user_ids_matching(query):
     return [str(doc["_id"]) for doc in cursor]
 
 
+def _owned_ticket(user_id, ticket_id):
+    ticket = SupportTicketModel.find_by_id(ticket_id)
+    if not ticket or ticket.get("user_id") != str(user_id):
+        raise SupportError("Ticket not found", 404)
+    return ticket
+
+
 class SupportService:
     @staticmethod
     def ensure_indexes():
         SupportTicketModel.ensure_indexes()
 
     @staticmethod
-    def get_user_conversation(user_id, since=None):
-        ticket = SupportTicketModel.find_by_user_id(user_id)
-        if not ticket:
-            return {"ticket": None, "messages": []}
-        since_dt = _parse_since(since)
-        messages = SupportMessageModel.list_by_ticket(ticket["_id"], since=since_dt)
-        return {"ticket": ticket, "messages": messages}
+    def list_user_tickets(user_id):
+        tickets = SupportTicketModel.list_for_user(user_id)
+        return {
+            "tickets": tickets,
+            "unread_total": SupportTicketModel.unread_user_total(user_id),
+        }
 
     @staticmethod
-    def send_user_message(user_id, body):
+    def get_user_conversation(user_id, since=None, ticket_id=None):
+        tickets = SupportTicketModel.list_for_user(user_id)
+        if ticket_id:
+            ticket = _owned_ticket(user_id, ticket_id)
+        else:
+            ticket = SupportTicketModel.find_active_for_user(user_id) or (
+                tickets[0] if tickets else None
+            )
+        if not ticket:
+            return {"ticket": None, "messages": [], "tickets": []}
+        since_dt = _parse_since(since)
+        messages = SupportMessageModel.list_by_ticket(ticket["_id"], since=since_dt)
+        return {"ticket": ticket, "messages": messages, "tickets": tickets}
+
+    @staticmethod
+    def send_user_message(user_id, body, ticket_id=None):
         text = _clean_body(body)
-        ticket = SupportTicketModel.get_or_create_for_user(user_id)
+        if ticket_id:
+            ticket = _owned_ticket(user_id, ticket_id)
+            if ticket.get("status") == "closed":
+                raise SupportError("Ticket is closed", 400)
+        else:
+            ticket = SupportTicketModel.get_or_create_for_user(user_id)
+
         message = SupportMessageModel.create(
             ticket_id=ticket["_id"],
             author_id=user_id,
@@ -105,13 +136,39 @@ class SupportService:
         return {"ticket": ticket, "message": message}
 
     @staticmethod
-    def mark_user_messages_read(user_id):
-        ticket = SupportTicketModel.find_by_user_id(user_id)
+    def mark_user_messages_read(user_id, ticket_id=None):
+        if ticket_id:
+            ticket = _owned_ticket(user_id, ticket_id)
+        else:
+            ticket = SupportTicketModel.find_active_for_user(
+                user_id
+            ) or SupportTicketModel.find_latest_for_user(user_id)
         if not ticket:
             return {"ticket": None, "modified": 0}
         modified = SupportMessageModel.mark_role_as_read(ticket["_id"], "admin")
         ticket = SupportTicketModel.clear_unread_for_user(ticket["_id"])
         return {"ticket": ticket, "modified": modified}
+
+    @staticmethod
+    def submit_csat(user_id, ticket_id, score):
+        ticket = _owned_ticket(user_id, ticket_id)
+        if ticket.get("status") != "closed":
+            raise SupportError("Ticket is not closed", 400)
+        if not ticket.get("csat_required"):
+            raise SupportError("CSAT is not required for this ticket", 400)
+        if ticket.get("csat_submitted_at"):
+            raise SupportError("CSAT already submitted", 400)
+        try:
+            value = int(score)
+        except (TypeError, ValueError) as exc:
+            raise SupportError("score must be an integer between 0 and 5", 400) from exc
+        if value < CSAT_MIN or value > CSAT_MAX:
+            raise SupportError("score must be an integer between 0 and 5", 400)
+
+        updated = SupportTicketModel.submit_csat(ticket_id, value)
+        if not updated:
+            raise SupportError("Unable to submit CSAT", 400)
+        return {"ticket": updated}
 
     @staticmethod
     def list_admin_tickets(status=None, q=None):
@@ -184,13 +241,40 @@ class SupportService:
         return {"ticket": _enrich_ticket(ticket), "modified": modified}
 
     @staticmethod
-    def close_ticket(admin_id, ticket_id):
+    def close_ticket(admin_id, ticket_id, skip_csat=False):
         ticket = SupportTicketModel.find_by_id(ticket_id)
         if not ticket:
             raise SupportError("Ticket not found", 404)
         if ticket.get("status") == "closed":
             return _enrich_ticket(ticket)
-        return _enrich_ticket(SupportTicketModel.close(ticket_id, admin_id))
+
+        csat_required = not bool(skip_csat)
+        ticket = SupportTicketModel.close(
+            ticket_id, admin_id, csat_required=csat_required
+        )
+        body = SYSTEM_CLOSED_CSAT if csat_required else SYSTEM_CLOSED
+        SupportMessageModel.create(
+            ticket_id=ticket_id,
+            author_id="system",
+            author_role="system",
+            body=body,
+        )
+        preview = SupportTicketModel.preview_from_body(body)
+        ticket = SupportTicketModel.apply_system_message(
+            ticket_id, preview, increment_unread=False
+        )
+
+        try:
+            from src.app.services.notification_service import NotificationService
+
+            NotificationService.notify_user_support_closed(
+                user_id=ticket["user_id"],
+                ticket_id=ticket["_id"],
+                csat_required=csat_required,
+            )
+        except Exception:
+            pass
+        return _enrich_ticket(ticket)
 
     @staticmethod
     def reopen_ticket(ticket_id):

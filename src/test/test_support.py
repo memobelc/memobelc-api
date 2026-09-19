@@ -44,6 +44,7 @@ def test_support_empty_conversation(client):
     data = response.get_json()
     assert data["ticket"] is None
     assert data["messages"] == []
+    assert data.get("tickets") == []
 
 
 def test_support_send_message_creates_ticket(client):
@@ -66,6 +67,7 @@ def test_support_send_message_creates_ticket(client):
     payload = conversation.get_json()
     assert payload["ticket"]["_id"] == data["ticket"]["_id"]
     assert len(payload["messages"]) == 1
+    assert len(payload["tickets"]) == 1
 
 
 def test_support_user_cannot_see_other_ticket(client):
@@ -132,7 +134,10 @@ def test_support_admin_list_reply_close_reopen(client):
         headers=admin_headers,
     )
     assert closed.status_code == 200
-    assert closed.get_json()["ticket"]["status"] == "closed"
+    closed_ticket = closed.get_json()["ticket"]
+    assert closed_ticket["status"] == "closed"
+    assert closed_ticket["csat_required"] is True
+    assert closed_ticket["csat_score"] is None
 
     blocked = client.post(
         f"/admin/support/tickets/{ticket_id}/messages",
@@ -141,21 +146,38 @@ def test_support_admin_list_reply_close_reopen(client):
     )
     assert blocked.status_code == 400
 
-    reopened_by_user = client.post(
+    still_closed = client.post(
+        "/support/messages",
+        headers=user_headers,
+        json={"body": "Ainda preciso de ajuda", "ticket_id": ticket_id},
+    )
+    assert still_closed.status_code == 400
+
+    new_ticket_resp = client.post(
         "/support/messages",
         headers=user_headers,
         json={"body": "Ainda preciso de ajuda"},
     )
-    assert reopened_by_user.status_code == 201
-    assert reopened_by_user.get_json()["ticket"]["status"] == "open"
+    assert new_ticket_resp.status_code == 201
+    new_ticket = new_ticket_resp.get_json()["ticket"]
+    assert new_ticket["status"] == "open"
+    assert new_ticket["_id"] != ticket_id
 
-    client.patch(f"/admin/support/tickets/{ticket_id}/close", headers=admin_headers)
+    listed_after = client.get("/support/tickets", headers=user_headers)
+    assert listed_after.status_code == 200
+    assert len(listed_after.get_json()["tickets"]) == 2
+
+    original = client.get(f"/support/tickets/{ticket_id}", headers=user_headers)
+    assert original.status_code == 200
+    assert original.get_json()["ticket"]["status"] == "closed"
+
     reopened = client.patch(
         f"/admin/support/tickets/{ticket_id}/reopen",
         headers=admin_headers,
     )
     assert reopened.status_code == 200
     assert reopened.get_json()["ticket"]["status"] == "in_progress"
+    assert reopened.get_json()["ticket"]["csat_required"] is False
 
 
 def test_support_admin_search_and_mark_read(client):
@@ -179,3 +201,96 @@ def test_support_admin_search_and_mark_read(client):
     )
     assert read.status_code == 200
     assert read.get_json()["ticket"]["unread_for_admin"] == 0
+
+
+def test_support_csat_and_skip_close(client):
+    suffix = uuid.uuid4().hex[:8]
+    user_headers, _ = _auth_user(client, f"csat_{suffix}@example.com", name="Eva")
+    other_headers, _ = _auth_user(client, f"other_{suffix}@example.com")
+    admin_headers, _ = _auth_user(client, f"admin_csat_{suffix}@example.com", admin=True)
+
+    created = client.post(
+        "/support/messages",
+        headers=user_headers,
+        json={"body": "Preciso de ajuda com o plano"},
+    )
+    ticket_id = created.get_json()["ticket"]["_id"]
+
+    too_early = client.post(
+        f"/support/tickets/{ticket_id}/csat",
+        headers=user_headers,
+        json={"score": 5},
+    )
+    assert too_early.status_code == 400
+
+    closed = client.patch(
+        f"/admin/support/tickets/{ticket_id}/close",
+        headers=admin_headers,
+        json={},
+    )
+    assert closed.status_code == 200
+    assert closed.get_json()["ticket"]["csat_required"] is True
+
+    thread = client.get(f"/support/tickets/{ticket_id}", headers=user_headers)
+    bodies = [item["body"] for item in thread.get_json()["messages"]]
+    assert "Please rate your experience." in bodies[-1]
+
+    invalid = client.post(
+        f"/support/tickets/{ticket_id}/csat",
+        headers=user_headers,
+        json={"score": 9},
+    )
+    assert invalid.status_code == 400
+
+    foreign = client.post(
+        f"/support/tickets/{ticket_id}/csat",
+        headers=other_headers,
+        json={"score": 4},
+    )
+    assert foreign.status_code == 404
+
+    rated = client.post(
+        f"/support/tickets/{ticket_id}/csat",
+        headers=user_headers,
+        json={"score": 0},
+    )
+    assert rated.status_code == 200
+    assert rated.get_json()["ticket"]["csat_score"] == 0
+    assert rated.get_json()["ticket"]["csat_submitted_at"]
+
+    again = client.post(
+        f"/support/tickets/{ticket_id}/csat",
+        headers=user_headers,
+        json={"score": 5},
+    )
+    assert again.status_code == 400
+
+    created2 = client.post(
+        "/support/messages",
+        headers=user_headers,
+        json={"body": "Novo atendimento"},
+    )
+    other_id = created2.get_json()["ticket"]["_id"]
+    assert other_id != ticket_id
+
+    skipped = client.patch(
+        f"/admin/support/tickets/{other_id}/close",
+        headers=admin_headers,
+        json={"skip_csat": True},
+    )
+    assert skipped.status_code == 200
+    skipped_ticket = skipped.get_json()["ticket"]
+    assert skipped_ticket["status"] == "closed"
+    assert skipped_ticket["csat_required"] is False
+
+    skip_rate = client.post(
+        f"/support/tickets/{other_id}/csat",
+        headers=user_headers,
+        json={"score": 3},
+    )
+    assert skip_rate.status_code == 400
+
+    skipped_thread = client.get(f"/support/tickets/{other_id}", headers=user_headers)
+    last_body = skipped_thread.get_json()["messages"][-1]["body"]
+    assert last_body == "This support conversation was closed."
+    assert "rate your experience" not in last_body.lower()

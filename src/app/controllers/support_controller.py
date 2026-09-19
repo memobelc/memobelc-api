@@ -10,13 +10,38 @@ def _error(exc):
     return jsonify({"error": exc.message}), exc.status_code
 
 
+def _json_body():
+    return request.get_json(silent=True) or {}
+
+
 class SupportController:
+    @staticmethod
+    @token_required
+    def list_tickets(current_user, token):
+        result = SupportService.list_user_tickets(str(current_user._id))
+        return jsonify(result), 200
+
     @staticmethod
     @token_required
     def get_conversation(current_user, token):
         since = request.args.get("since")
+        ticket_id = request.args.get("ticket_id")
         try:
-            result = SupportService.get_user_conversation(str(current_user._id), since=since)
+            result = SupportService.get_user_conversation(
+                str(current_user._id), since=since, ticket_id=ticket_id
+            )
+        except SupportError as exc:
+            return _error(exc)
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def get_ticket(current_user, token, ticket_id):
+        since = request.args.get("since")
+        try:
+            result = SupportService.get_user_conversation(
+                str(current_user._id), since=since, ticket_id=ticket_id
+            )
         except SupportError as exc:
             return _error(exc)
         return jsonify(result), 200
@@ -25,8 +50,11 @@ class SupportController:
     @token_required
     def list_messages(current_user, token):
         since = request.args.get("since")
+        ticket_id = request.args.get("ticket_id")
         try:
-            result = SupportService.get_user_conversation(str(current_user._id), since=since)
+            result = SupportService.get_user_conversation(
+                str(current_user._id), since=since, ticket_id=ticket_id
+            )
         except SupportError as exc:
             return _error(exc)
         return jsonify(result), 200
@@ -34,9 +62,13 @@ class SupportController:
     @staticmethod
     @token_required
     def send_message(current_user, token):
-        data = request.get_json() or {}
+        data = _json_body()
         try:
-            result = SupportService.send_user_message(str(current_user._id), data.get("body"))
+            result = SupportService.send_user_message(
+                str(current_user._id),
+                data.get("body"),
+                ticket_id=data.get("ticket_id"),
+            )
         except SupportError as exc:
             return _error(exc)
         return jsonify(result), 201
@@ -44,7 +76,26 @@ class SupportController:
     @staticmethod
     @token_required
     def mark_read(current_user, token):
-        result = SupportService.mark_user_messages_read(str(current_user._id))
+        data = _json_body()
+        ticket_id = data.get("ticket_id") or request.args.get("ticket_id")
+        try:
+            result = SupportService.mark_user_messages_read(
+                str(current_user._id), ticket_id=ticket_id
+            )
+        except SupportError as exc:
+            return _error(exc)
+        return jsonify(result), 200
+
+    @staticmethod
+    @token_required
+    def submit_csat(current_user, token, ticket_id):
+        data = _json_body()
+        try:
+            result = SupportService.submit_csat(
+                str(current_user._id), ticket_id, data.get("score")
+            )
+        except SupportError as exc:
+            return _error(exc)
         return jsonify(result), 200
 
 
@@ -100,7 +151,7 @@ class AdminSupportController:
         forbidden = AdminSupportController._forbid_unless_admin(current_user)
         if forbidden:
             return forbidden
-        data = request.get_json() or {}
+        data = _json_body()
         try:
             result = SupportService.send_admin_message(
                 str(current_user._id), ticket_id, data.get("body")
@@ -127,8 +178,13 @@ class AdminSupportController:
         forbidden = AdminSupportController._forbid_unless_admin(current_user)
         if forbidden:
             return forbidden
+        data = _json_body()
         try:
-            ticket = SupportService.close_ticket(str(current_user._id), ticket_id)
+            ticket = SupportService.close_ticket(
+                str(current_user._id),
+                ticket_id,
+                skip_csat=bool(data.get("skip_csat")),
+            )
         except SupportError as exc:
             return _error(exc)
         return jsonify({"ticket": ticket}), 200
@@ -147,6 +203,13 @@ class AdminSupportController:
 
 
 support_blueprint = Blueprint("support_blueprint", __name__)
+support_blueprint.route("/tickets", methods=["GET"])(SupportController.list_tickets)
+support_blueprint.route("/tickets/<string:ticket_id>", methods=["GET"])(
+    SupportController.get_ticket
+)
+support_blueprint.route("/tickets/<string:ticket_id>/csat", methods=["POST"])(
+    SupportController.submit_csat
+)
 support_blueprint.route("/conversation", methods=["GET"])(SupportController.get_conversation)
 support_blueprint.route("/messages", methods=["GET"])(SupportController.list_messages)
 support_blueprint.route("/messages", methods=["POST"])(SupportController.send_message)
