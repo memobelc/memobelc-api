@@ -3,6 +3,35 @@
 from src.app import mongo
 from src.app.utils.billing_utils import serialize_doc, to_object_id, utcnow
 
+ALLOWED_BADGE_ANIMATIONS = ("coin",)
+DEFAULT_BADGE_ANIMATION = "coin"
+
+
+def _normalize_animation(value):
+    if value is None:
+        return DEFAULT_BADGE_ANIMATION
+    key = str(value).strip().lower()
+    if not key:
+        return DEFAULT_BADGE_ANIMATION
+    if key not in ALLOWED_BADGE_ANIMATIONS:
+        raise ValueError("Invalid badge animation")
+    return key
+
+
+def _serialize_badge(doc):
+    item = serialize_doc(doc)
+    if not item:
+        return item
+    animation = item.get("animation") or DEFAULT_BADGE_ANIMATION
+    if isinstance(animation, str):
+        animation = animation.strip().lower()
+    else:
+        animation = DEFAULT_BADGE_ANIMATION
+    if animation not in ALLOWED_BADGE_ANIMATIONS:
+        animation = DEFAULT_BADGE_ANIMATION
+    item["animation"] = animation
+    return item
+
 
 class BadgeModel:
     @staticmethod
@@ -15,13 +44,14 @@ class BadgeModel:
             "name": name,
             "description": (data.get("description") or "").strip(),
             "image": (data.get("image") or "").strip() or None,
+            "animation": _normalize_animation(data.get("animation")),
             "is_active": bool(data.get("is_active", True)),
             "created_at": now,
             "updated_at": now,
         }
         result = mongo.db.badges.insert_one(doc)
         doc["_id"] = result.inserted_id
-        item = serialize_doc(doc)
+        item = _serialize_badge(doc)
         item["earners_count"] = 0
         return item
 
@@ -40,6 +70,8 @@ class BadgeModel:
             updates["description"] = (data.get("description") or "").strip()
         if "image" in data:
             updates["image"] = (data.get("image") or "").strip() or None
+        if "animation" in data:
+            updates["animation"] = _normalize_animation(data.get("animation"))
         if "is_active" in data:
             updates["is_active"] = bool(data.get("is_active"))
         mongo.db.badges.update_one({"_id": to_object_id(badge_id)}, {"$set": updates})
@@ -52,7 +84,7 @@ class BadgeModel:
         except Exception:
             return None
         doc = mongo.db.badges.find_one({"_id": oid})
-        return serialize_doc(doc)
+        return _serialize_badge(doc)
 
     @staticmethod
     def list_badges(active_only=False):
@@ -65,7 +97,7 @@ class BadgeModel:
             counts[str(row["_id"])] = int(row.get("count") or 0)
         result = []
         for doc in docs:
-            item = serialize_doc(doc)
+            item = _serialize_badge(doc)
             item["earners_count"] = counts.get(item["_id"], 0)
             result.append(item)
         return result
@@ -102,7 +134,7 @@ class BadgeModel:
             return []
         badge_ids = [to_object_id(item["badge_id"]) for item in awards if item.get("badge_id")]
         badges = {
-            str(doc["_id"]): serialize_doc(doc)
+            str(doc["_id"]): _serialize_badge(doc)
             for doc in mongo.db.badges.find({"_id": {"$in": badge_ids}})
         }
         result = []

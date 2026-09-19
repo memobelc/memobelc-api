@@ -56,15 +56,37 @@ def test_admin_badge_update_and_delete(client):
         json={"name": "Star", "description": "Nice"},
     )
     assert created.status_code == 201, created.get_json()
-    badge_id = created.get_json()["_id"]
+    created_body = created.get_json()
+    badge_id = created_body["_id"]
+    assert created_body["animation"] == "coin"
 
     patched = client.patch(
         f"/admin/badges/{badge_id}",
         headers=admin_headers,
-        json={"name": "Super Star", "description": "Better"},
+        json={"name": "Super Star", "description": "Better", "animation": "coin"},
     )
     assert patched.status_code == 200
-    assert patched.get_json()["name"] == "Super Star"
+    patched_body = patched.get_json()
+    assert patched_body["name"] == "Super Star"
+    assert patched_body["animation"] == "coin"
+
+    invalid = client.patch(
+        f"/admin/badges/{badge_id}",
+        headers=admin_headers,
+        json={"animation": "explode"},
+    )
+    assert invalid.status_code == 400
+
+    with client.application.app_context():
+        mongo.db.badges.update_one(
+            {"_id": ObjectId(badge_id)},
+            {"$unset": {"animation": ""}},
+        )
+    listed_legacy = client.get("/admin/badges", headers=admin_headers)
+    legacy = next(
+        item for item in listed_legacy.get_json()["badges"] if item["_id"] == badge_id
+    )
+    assert legacy["animation"] == "coin"
 
     awarded = client.post(
         f"/admin/users/{user_id}/badges",
