@@ -294,3 +294,21 @@ def test_support_csat_and_skip_close(client):
     last_body = skipped_thread.get_json()["messages"][-1]["body"]
     assert last_body == "This support conversation was closed."
     assert "rate your experience" not in last_body.lower()
+
+    metrics_forbidden = client.get("/admin/support/metrics", headers=user_headers)
+    assert metrics_forbidden.status_code == 403
+
+    metrics = client.get("/admin/support/metrics", headers=admin_headers)
+    assert metrics.status_code == 200
+    payload = metrics.get_json()
+    assert payload["team"]["count"] == 1
+    assert payload["team"]["average"] == 0
+    assert payload["team"]["pending"] == 0
+    assert payload["team"]["distribution"]["0"] == 1
+    assert len(payload["agents"]) == 1
+    assert payload["agents"][0]["count"] == 1
+    assert payload["agents"][0]["average"] == 0
+    assert payload["agents"][0]["admin_id"]
+    assert payload["recent"][0]["score"] == 0
+    assert payload["recent"][0]["ticket_id"] == ticket_id
+    assert payload["recent"][0]["admin_id"] == payload["agents"][0]["admin_id"]

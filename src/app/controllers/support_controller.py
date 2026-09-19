@@ -122,6 +122,14 @@ class AdminSupportController:
 
     @staticmethod
     @token_required
+    def csat_metrics(current_user, token):
+        forbidden = AdminSupportController._forbid_unless_admin(current_user)
+        if forbidden:
+            return forbidden
+        return jsonify(SupportService.csat_metrics()), 200
+
+    @staticmethod
+    @token_required
     def get_ticket(current_user, token, ticket_id):
         forbidden = AdminSupportController._forbid_unless_admin(current_user)
         if forbidden:
@@ -217,6 +225,7 @@ support_blueprint.route("/messages/read", methods=["POST"])(SupportController.ma
 
 admin_support_blueprint = Blueprint("admin_support_blueprint", __name__)
 admin_support_blueprint.route("/tickets", methods=["GET"])(AdminSupportController.list_tickets)
+admin_support_blueprint.route("/metrics", methods=["GET"])(AdminSupportController.csat_metrics)
 admin_support_blueprint.route("/tickets/<string:ticket_id>", methods=["GET"])(
     AdminSupportController.get_ticket
 )

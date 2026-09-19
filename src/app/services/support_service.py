@@ -51,6 +51,10 @@ def _enrich_ticket(ticket):
     enriched = dict(ticket)
     enriched["user_name"] = user.name if user else None
     enriched["user_email"] = user.email if user else None
+    handler_id = ticket.get("handled_by") or ticket.get("closed_by")
+    handler = UserModel.find_by_id(handler_id) if handler_id else None
+    enriched["handled_by_name"] = handler.name if handler else None
+    enriched["handled_by_email"] = handler.email if handler else None
     return enriched
 
 
@@ -216,7 +220,9 @@ class SupportService:
             body=text,
         )
         preview = SupportTicketModel.preview_from_body(text)
-        ticket = SupportTicketModel.apply_admin_message(ticket_id, preview)
+        ticket = SupportTicketModel.apply_admin_message(
+            ticket_id, preview, admin_id=admin_id
+        )
 
         try:
             from src.app.services.notification_service import NotificationService
@@ -249,8 +255,16 @@ class SupportService:
             return _enrich_ticket(ticket)
 
         csat_required = not bool(skip_csat)
+        handled_by = (
+            SupportMessageModel.last_admin_author(ticket_id)
+            or ticket.get("handled_by")
+            or admin_id
+        )
         ticket = SupportTicketModel.close(
-            ticket_id, admin_id, csat_required=csat_required
+            ticket_id,
+            admin_id,
+            csat_required=csat_required,
+            handled_by=handled_by,
         )
         body = SYSTEM_CLOSED_CSAT if csat_required else SYSTEM_CLOSED
         SupportMessageModel.create(
@@ -284,6 +298,93 @@ class SupportService:
         if ticket.get("status") != "closed":
             return _enrich_ticket(ticket)
         return _enrich_ticket(SupportTicketModel.reopen(ticket_id))
+
+    @staticmethod
+    def csat_metrics():
+        rated = list(
+            mongo.db.support_tickets.find(
+                {"csat_submitted_at": {"$ne": None}, "csat_score": {"$ne": None}}
+            )
+        )
+        pending = mongo.db.support_tickets.count_documents(
+            {
+                "status": "closed",
+                "csat_required": True,
+                "csat_submitted_at": None,
+            }
+        )
+
+        def empty_distribution():
+            return {str(score): 0 for score in range(CSAT_MIN, CSAT_MAX + 1)}
+
+        def summarize(scores, distribution=None):
+            dist = distribution if distribution is not None else empty_distribution()
+            if distribution is None:
+                for score in scores:
+                    key = str(score)
+                    if key in dist:
+                        dist[key] += 1
+            average = round(sum(scores) / len(scores), 2) if scores else None
+            return {
+                "count": len(scores),
+                "average": average,
+                "distribution": dist,
+            }
+
+        team_scores = []
+        agents = {}
+        for doc in rated:
+            try:
+                score = int(doc.get("csat_score"))
+            except (TypeError, ValueError):
+                continue
+            admin_id = str(doc.get("handled_by") or doc.get("closed_by") or "")
+            team_scores.append(score)
+            bucket = agents.setdefault(
+                admin_id,
+                {"scores": [], "distribution": empty_distribution()},
+            )
+            bucket["scores"].append(score)
+            key = str(score)
+            if key in bucket["distribution"]:
+                bucket["distribution"][key] += 1
+
+        team = summarize(team_scores)
+        team["pending"] = int(pending)
+
+        agent_rows = []
+        for admin_id, data in agents.items():
+            handler = UserModel.find_by_id(admin_id) if admin_id else None
+            row = summarize(data["scores"], data["distribution"])
+            row["admin_id"] = admin_id or None
+            row["admin_name"] = handler.name if handler else None
+            row["admin_email"] = handler.email if handler else None
+            agent_rows.append(row)
+        agent_rows.sort(key=lambda item: (-(item["average"] or 0), -item["count"]))
+
+        recent_docs = sorted(
+            rated,
+            key=lambda item: item.get("csat_submitted_at") or datetime.min,
+            reverse=True,
+        )[:20]
+        recent = []
+        for doc in recent_docs:
+            ticket = SupportTicketModel.serialize(doc)
+            user = UserModel.find_by_id(ticket["user_id"])
+            admin_id = ticket.get("handled_by") or ticket.get("closed_by")
+            handler = UserModel.find_by_id(admin_id) if admin_id else None
+            recent.append(
+                {
+                    "ticket_id": ticket["_id"],
+                    "score": ticket["csat_score"],
+                    "submitted_at": ticket["csat_submitted_at"],
+                    "user_name": user.name if user else None,
+                    "admin_id": admin_id,
+                    "admin_name": handler.name if handler else None,
+                }
+            )
+
+        return {"team": team, "agents": agent_rows, "recent": recent}
 
     @staticmethod
     def post_system_message(user_id, body):

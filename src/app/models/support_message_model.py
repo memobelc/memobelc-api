@@ -80,3 +80,17 @@ class SupportMessageModel:
             {"$set": {"read_at": now}},
         )
         return result.modified_count
+
+    @staticmethod
+    def last_admin_author(ticket_id):
+        try:
+            oid = ObjectId(ticket_id)
+        except (InvalidId, TypeError):
+            return None
+        doc = mongo.db.support_messages.find_one(
+            {"ticket_id": oid, "author_role": "admin"},
+            sort=[("created_at", -1)],
+        )
+        if not doc or not doc.get("author_id"):
+            return None
+        return str(doc["author_id"])

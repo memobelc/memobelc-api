@@ -66,6 +66,7 @@ class SupportTicketModel:
             "unread_for_user": int(doc.get("unread_for_user") or 0),
             "unread_for_admin": int(doc.get("unread_for_admin") or 0),
             "closed_by": str(doc["closed_by"]) if doc.get("closed_by") else None,
+            "handled_by": str(doc["handled_by"]) if doc.get("handled_by") else None,
             "closed_at": _iso(doc.get("closed_at")),
             "csat_required": bool(doc.get("csat_required")),
             "csat_score": _csat_score(doc),
@@ -86,6 +87,7 @@ class SupportTicketModel:
             "unread_for_user": 0,
             "unread_for_admin": 0,
             "closed_by": None,
+            "handled_by": None,
             "closed_at": None,
             "csat_required": False,
             "csat_score": None,
@@ -173,20 +175,20 @@ class SupportTicketModel:
         return SupportTicketModel.find_by_id(ticket_id)
 
     @staticmethod
-    def apply_admin_message(ticket_id, preview):
+    def apply_admin_message(ticket_id, preview, admin_id=None):
         now = utcnow()
+        fields = {
+            "status": "in_progress",
+            "last_message_at": now,
+            "last_message_preview": preview,
+            "last_author_role": "admin",
+            "updated_at": now,
+        }
+        if admin_id:
+            fields["handled_by"] = str(admin_id)
         mongo.db.support_tickets.update_one(
             {"_id": ObjectId(ticket_id)},
-            {
-                "$set": {
-                    "status": "in_progress",
-                    "last_message_at": now,
-                    "last_message_preview": preview,
-                    "last_author_role": "admin",
-                    "updated_at": now,
-                },
-                "$inc": {"unread_for_user": 1},
-            },
+            {"$set": fields, "$inc": {"unread_for_user": 1}},
         )
         return SupportTicketModel.find_by_id(ticket_id)
 
@@ -207,7 +209,7 @@ class SupportTicketModel:
         return SupportTicketModel.find_by_id(ticket_id)
 
     @staticmethod
-    def close(ticket_id, closed_by, csat_required=True):
+    def close(ticket_id, closed_by, csat_required=True, handled_by=None):
         now = utcnow()
         result = mongo.db.support_tickets.update_one(
             {"_id": ObjectId(ticket_id)},
@@ -215,6 +217,7 @@ class SupportTicketModel:
                 "$set": {
                     "status": "closed",
                     "closed_by": str(closed_by),
+                    "handled_by": str(handled_by or closed_by),
                     "closed_at": now,
                     "csat_required": bool(csat_required),
                     "csat_score": None,
